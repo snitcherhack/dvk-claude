@@ -1,26 +1,27 @@
-"""DeepSeek provider implementation (native Anthropic-compatible Messages)."""
+"""DeepSeek provider implementation (OpenAI-compatible chat completions)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-import httpx
+from loguru import logger
 
-from providers.anthropic_messages import AnthropicMessagesTransport
 from providers.base import ProviderConfig
-from providers.defaults import DEEPSEEK_ANTHROPIC_DEFAULT_BASE
+from providers.defaults import DEEPSEEK_DEFAULT_BASE
+from providers.openai_compat import OpenAIChatTransport
 
 from .request import build_request_body
 
 
-class DeepSeekProvider(AnthropicMessagesTransport):
-    """DeepSeek using ``https://api.deepseek.com/anthropic`` (Anthropic Messages API)."""
+class DeepSeekProvider(OpenAIChatTransport):
+    """DeepSeek using the OpenAI-compatible ``/v1/chat/completions`` API."""
 
     def __init__(self, config: ProviderConfig):
         super().__init__(
             config,
             provider_name="DEEPSEEK",
-            default_base_url=DEEPSEEK_ANTHROPIC_DEFAULT_BASE,
+            base_url=config.base_url or DEEPSEEK_DEFAULT_BASE,
+            api_key=config.api_key,
         )
 
     def _build_request_body(
@@ -31,21 +32,29 @@ class DeepSeekProvider(AnthropicMessagesTransport):
             thinking_enabled=self._is_thinking_enabled(request, thinking_enabled),
         )
 
-    def _request_headers(self) -> dict[str, str]:
-        return {
-            "Accept": "text/event-stream",
-            "Content-Type": "application/json",
-            "x-api-key": self._api_key,
-        }
+    def _prepare_create_body(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Safety net: strip system-role msgs and flatten array content to strings.
 
-    async def _send_model_list_request(self) -> httpx.Response:
-        """DeepSeek lists models from the OpenAI-format root, not /anthropic."""
-        url = str(
-            httpx.URL(self._base_url).copy_with(
-                path="/models", query=None, fragment=None
+        DeepSeek v4-pro rejects ``role: system`` and ``content`` as an array
+        of content blocks — both must be strings.
+        """
+        messages = body.get("messages", [])
+        system_count = sum(1 for m in messages if m.get("role") == "system")
+        if system_count:
+            logger.warning(
+                "DEEPSEEK_SAFETY_NET: {} system-role msgs survived _move_system_to_user, stripping them",
+                system_count,
             )
-        )
-        return await self._client.get(url, headers=self._model_list_headers())
-
-    def _model_list_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._api_key}"}
+        cleaned: list[dict[str, Any]] = []
+        for m in messages:
+            if m.get("role") == "system":
+                continue
+            content = m.get("content")
+            if isinstance(content, list):
+                m = {**m, "content": "\n\n".join(
+                    p.get("text", "") if isinstance(p, dict) else str(p)
+                    for p in content
+                )}
+            cleaned.append(m)
+        body["messages"] = cleaned
+        return body

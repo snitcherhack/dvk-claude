@@ -111,6 +111,8 @@ class Settings(BaseSettings):
 
     # ==================== DeepSeek Config ====================
     deepseek_api_key: str = Field(default="", validation_alias="DEEPSEEK_API_KEY")
+    deepseek_base_url: str = Field(default="", validation_alias="DEEPSEEK_BASE_URL")
+    deepseek_proxy: str = Field(default="", validation_alias="DEEPSEEK_PROXY")
 
     # ==================== Kimi Config ====================
     kimi_api_key: str = Field(default="", validation_alias="KIMI_API_KEY")

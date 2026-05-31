@@ -1,0 +1,27 @@
+{
+  "project": "video3_ia",
+  "model": "MiniMax-Hailuo-2.3-Fast",
+  "resolution": "1080P",
+  "scenes": [
+    {
+      "id": "intro_1",
+      "prompt": "A glowing AI brain floating in dark space, neural connections pulsating blue [Slow zoom in], cinematic lighting, 4K quality",
+      "duration": 6
+    },
+    {
+      "id": "body_1",
+      "prompt": "Futuristic data center with rows of servers, holographic interfaces floating in air, blue and purple ambient lighting [Pan right slowly]",
+      "duration": 6
+    },
+    {
+      "id": "body_2",
+      "prompt": "Digital code streams flowing like waterfall, green matrix-style characters, abstract visualization of AI algorithms processing data [Slow tilt down]",
+      "duration": 6
+    },
+    {
+      "id": "outro_1",
+      "prompt": "Same glowing AI brain from intro, now pulsing with golden light, camera slowly pulling back revealing vast network of connected nodes [Slow zoom out]",
+      "duration": 6
+    }
+  ]
+}

@@ -17,8 +17,7 @@ KIMI_DEFAULT_BASE = "https://api.moonshot.ai/v1"
 WAFER_DEFAULT_BASE = "https://pass.wafer.ai/v1"
 # DeepSeek Anthropic-compatible Messages API (not OpenAI ``/v1`` chat completions).
 DEEPSEEK_ANTHROPIC_DEFAULT_BASE = "https://api.deepseek.com/anthropic"
-# Historical export name: DeepSeek upstream is the native Anthropic path above.
-DEEPSEEK_DEFAULT_BASE = DEEPSEEK_ANTHROPIC_DEFAULT_BASE
+DEEPSEEK_DEFAULT_BASE = "https://api.deepseek.com/v1"
 OPENROUTER_DEFAULT_BASE = "https://openrouter.ai/api/v1"
 LMSTUDIO_DEFAULT_BASE = "http://localhost:1234/v1"
 LLAMACPP_DEFAULT_BASE = "http://localhost:8080/v1"
@@ -64,12 +63,14 @@ PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {
     ),
     "deepseek": ProviderDescriptor(
         provider_id="deepseek",
-        transport_type="anthropic_messages",
+        transport_type="openai_chat",
         credential_env="DEEPSEEK_API_KEY",
         credential_url="https://platform.deepseek.com/api_keys",
         credential_attr="deepseek_api_key",
-        default_base_url=DEEPSEEK_ANTHROPIC_DEFAULT_BASE,
-        capabilities=("chat", "streaming", "tools", "thinking", "native_anthropic"),
+        default_base_url=DEEPSEEK_DEFAULT_BASE,
+        base_url_attr="deepseek_base_url",
+        proxy_attr="deepseek_proxy",
+        capabilities=("chat", "streaming", "tools", "thinking"),
     ),
     "lmstudio": ProviderDescriptor(
         provider_id="lmstudio",
