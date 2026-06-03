@@ -1,0 +1,43 @@
+/clear vs /compact - Guia rapida (Junio 2026)
+
+/clear
+  Que hace:   Borra TODO el historial. Empiezas de cero.
+  Contexto:   Se pierde todo. Claude Code relee CLAUDE.md y
+              memorias al arrancar.
+  Costo:      Reduce el gasto al minimo inmediatamente.
+  Cuando:     Cuando terminas una tarea y empiezas otra distinta.
+              Cada 15-20 interacciones sin relacion entre si.
+
+/compact
+  Que hace:   Comprime la conversacion en un resumen, manteniendo
+              lo esencial.
+  Contexto:   Se conserva una version resumida del hilo.
+  Costo:      Reduce el gasto, pero menos que /clear.
+  Cuando:     Cuando estas en medio de una tarea larga y el contexto
+              se ha disparado (>50-60%).
+
+Regla practica:
+  - Barra de contexto al 50-60%? -> /compact
+  - Cambiaste de tema o proyecto? -> /clear
+  - Sesion larga, >15 intercambios? -> /compact
+
+
+  ¿Cada cuánto?
+
+  Cuando la barra de contexto pase del 50-60%, haz /compact. Si ya terminaste lo que estabas haciendo, mejor /clear directamente.
+
+  Dicho esto, contigo el contexto sube muy rápido porque tienes sesiones largas con muchas herramientas. Yo diría: cada 15-20 interacciones o cuando notes 
+  lentitud, haz /compact. Si cambias de tema por completo, /clear.
+
+  ¿Dónde se fueron los server.log?
+
+  Se borraron del disco. No están en Git, nunca estuvieron trackeados (eran archivos "untracked" en el git status). El proxy genera server.log automáticamente
+  cada vez que arranca — es el log de depuración del proxy.
+
+  ¿No son necesarios entonces?
+
+  No para el día a día. Esos logs registran cada request HTTP que pasa por el proxy — son útiles si estás debugueando un error raro (p.ej. un provider que
+  devuelve algo malformado). Para uso normal, puedes ignorarlos por completo.
+
+  El proxy va a generar uno nuevo (server.log) la próxima vez que lo arranques, pero ese solo pesa ~17MB y está en .gitignore — no interfiere con nada. Si un día
+  necesitas debuguear algo, actívalo; cuando no, lo ignoras.
