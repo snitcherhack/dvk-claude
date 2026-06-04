@@ -10,8 +10,6 @@ agent_workspace
 server.log
 server.*.log
 debug-*.log
-ds.sh
-ds.sh.bak
 .coverage
 llama_cache
 .smoke-results
