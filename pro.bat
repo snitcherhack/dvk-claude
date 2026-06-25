@@ -14,7 +14,7 @@ if %errorlevel%==0 (
 echo Aplicando settings Windows...
 copy /Y "%~dp0settings\settings.windows.json" "%USERPROFILE%\.claude\settings.json"
 
-:: Limpia variables del proxy free-claude-code por si están activas
+:: Limpia variables del proxy dvk-claude por si están activas
 set ANTHROPIC_BASE_URL=
 set ANTHROPIC_API_KEY=
 set ANTHROPIC_AUTH_TOKEN=

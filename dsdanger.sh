@@ -2,7 +2,7 @@
 # ~/free-claude-code/dsdanger.sh - Arranca proxy + lanza Claude Code con DeepSeek (Linux, modo dangerous)
 # Salta confirmaciones de permisos. Usar en PC trabajo (Ubuntu). Windows usa dsdanger.bat
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/proxy"
 
 echo "Matando proxy anterior..."
 pkill -f "uvicorn" 2>/dev/null || true

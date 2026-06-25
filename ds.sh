@@ -2,7 +2,7 @@
 # ~/free-claude-code/ds.sh - Arranca proxy + lanza Claude Code con DeepSeek (Linux)
 # Usar en el PC de trabajo (Ubuntu). Windows usa ds.bat
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/proxy"
 
 echo "Matando proxy anterior..."
 pkill -f "uvicorn" 2>/dev/null || true
