@@ -43,7 +43,25 @@
       "Bash(git commit *zabbix-server*)",
       "Bash(git push *zazu*)",
       "Bash(git pull *zazu*)",
-      "Bash(git commit *zazu*)"
+      "Bash(git commit *zazu*)",
+      "Bash(git -C *ansible* push)",
+      "Bash(git -C *ansible* pull)",
+      "Bash(git -C *ansible* commit *)",
+      "Bash(git -C *zabbix* push)",
+      "Bash(git -C *zabbix* pull)",
+      "Bash(git -C *zabbix* commit *)",
+      "Bash(git -C *zazu* push)",
+      "Bash(git -C *zazu* pull)",
+      "Bash(git -C *zazu* commit *)",
+      "Bash(cd *ansible* && git push)",
+      "Bash(cd *ansible* && git pull)",
+      "Bash(cd *ansible* && git commit *)",
+      "Bash(cd *zabbix* && git push)",
+      "Bash(cd *zabbix* && git pull)",
+      "Bash(cd *zabbix* && git commit *)",
+      "Bash(cd *zazu* && git push)",
+      "Bash(cd *zazu* && git pull)",
+      "Bash(cd *zazu* && git commit *)"
     ]
   },
   "hooks": {
