@@ -12,7 +12,7 @@ Este proyecto es un proxy FastAPI que intercepta las llamadas de Claude Code a l
 
 ### Cómo arrancar
 ```bash
-# Desde el repo
+# Desde esta carpeta (proxy/)
 uv run uvicorn server:app --host 0.0.0.0 --port 8082
 
 # Desde el CLI instalado
