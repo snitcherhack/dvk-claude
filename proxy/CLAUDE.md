@@ -1,4 +1,4 @@
-# Free Claude Code — Proyecto Proxy DeepSeek
+# DVK Claude — Proyecto Proxy DeepSeek
 
 Este proyecto es un proxy FastAPI que intercepta las llamadas de Claude Code a la API de Anthropic y las redirige a proveedores alternativos. En esta instancia se usa **DeepSeek v4 Flash** a través del provider `deepseek/` con endpoint Anthropic-compatible (no OpenAI chat).
 
@@ -26,7 +26,7 @@ ANTHROPIC_AUTH_TOKEN="freecc" ANTHROPIC_BASE_URL="http://localhost:8082" CLAUDE_
 
 ## Estructura del proyecto
 ```
-free-claude-code/
+proxy/
 ├── server.py              # ASGI entry point
 ├── api/                   # FastAPI routes, service layer, routing, optimizations
 │   └── models/anthropic.py  # Endpoint /v1/messages
