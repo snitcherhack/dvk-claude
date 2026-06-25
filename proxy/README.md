@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🤖 Free Claude Code
+# 🤖 DVK Claude
 
 Use Claude Code CLI, VS Code, JetBrains ACP, or chat bots through your own Anthropic-compatible proxy.
 
@@ -12,14 +12,14 @@ Use Claude Code CLI, VS Code, JetBrains ACP, or chat bots through your own Anthr
 [![Code style: Ruff](https://img.shields.io/badge/code%20formatting-ruff-f5a623.svg?style=for-the-badge)](https://github.com/astral-sh/ruff)
 [![Logging: Loguru](https://img.shields.io/badge/logging-loguru-4ecdc4.svg?style=for-the-badge)](https://github.com/Delgan/loguru)
 
-Free Claude Code routes Anthropic Messages API traffic from Claude Code to NVIDIA NIM, Kimi, Wafer, OpenRouter, DeepSeek, LM Studio, llama.cpp, or Ollama. It keeps Claude Code's client-side protocol stable while letting you choose free, paid, or local models.
+DVK Claude routes Anthropic Messages API traffic from Claude Code to NVIDIA NIM, Kimi, Wafer, OpenRouter, DeepSeek, LM Studio, llama.cpp, or Ollama. It keeps Claude Code's client-side protocol stable while letting you choose free, paid, or local models.
 
 [Quick Start](#quick-start) · [Local Admin UI](#local-admin-ui) · [Providers](#choose-a-provider) · [Clients](#connect-claude-code) · [Configuration](#configuration-reference) · [Troubleshooting](#troubleshooting) · [Development](#development)
 
 </div>
 
 <div align="center">
-  <img src="assets/pic.png" alt="Free Claude Code in action" width="700">
+  <img src="assets/pic.png" alt="DVK Claude in action" width="700">
 </div>
 
 ## Star History
@@ -541,7 +541,7 @@ Confirm the extension environment variables are set, then reload the extension o
 ## How It Works
 
 <div align="center">
-  <img src="assets/how-it-works.svg" alt="Free Claude Code request flow architecture" width="900">
+  <img src="assets/how-it-works.svg" alt="DVK Claude request flow architecture" width="900">
 </div>
 
 Diagram source: [`assets/how-it-works.mmd`](assets/how-it-works.mmd).
