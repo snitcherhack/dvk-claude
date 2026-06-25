@@ -2,7 +2,7 @@
 title DeepSeek Claude Code Launcher
 
 echo Arrancando proxy free-claude-code...
-start "Free Claude Code Proxy" cmd /k "cd /d A:\PROYECTOS\free-claude-code\proxy && uv run server.py"
+start "Free Claude Code Proxy" cmd /k "cd /d A:\PROYECTOS\dvk-claude\proxy && uv run server.py"
 
 echo Esperando a que el proxy arranque...
 timeout /t 4 /nobreak >nul
