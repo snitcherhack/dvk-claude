@@ -30,6 +30,20 @@
       "Bash(git push)",
       "Bash(git push *)",
       "Bash(git pull *)"
+    ],
+    "deny": [
+      "Bash(git push *ansible-deployment*)",
+      "Bash(git pull *ansible-deployment*)",
+      "Bash(git commit *ansible-deployment*)",
+      "Bash(git push *ansible-larus*)",
+      "Bash(git pull *ansible-larus*)",
+      "Bash(git commit *ansible-larus*)",
+      "Bash(git push *zabbix-server*)",
+      "Bash(git pull *zabbix-server*)",
+      "Bash(git commit *zabbix-server*)",
+      "Bash(git push *zazu*)",
+      "Bash(git pull *zazu*)",
+      "Bash(git commit *zazu*)"
     ]
   },
   "hooks": {
