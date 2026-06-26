@@ -11,6 +11,9 @@ if %errorlevel%==0 (
     exit /b 1
 )
 
+:: Sincroniza hooks y memoria desde GitHub
+git -C "%USERPROFILE%\.claude" pull --no-edit 2>nul
+
 echo Aplicando settings Windows...
 copy /Y "%~dp0settings\settings.windows.json" "%USERPROFILE%\.claude\settings.json"
 
