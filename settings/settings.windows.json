@@ -1,5 +1,5 @@
 {
-  "model": "sonnet",
+  "model": "claude-sonnet-5",
   "bashAllowlist": [
     "git -C \"%USERPROFILE%\\.claude\" *",
     "cd \"%USERPROFILE%\\.claude\" && git *",
