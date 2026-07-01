@@ -36,7 +36,9 @@
       "Bash(git commit *)",
       "Bash(git push)",
       "Bash(git push *)",
-      "Bash(git pull *)"
+      "Bash(git pull *)",
+      "Bash(git -C ~/dvk-claude *)",
+      "Bash(cd ~/dvk-claude && git *)"
     ],
     "deny": [
       "Bash(git push *ansible-deployment*)",
