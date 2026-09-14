@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hermes Autonomous Runner result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "gate", "completed", "remaining", "evidence"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["DONE", "WAIT_USER", "BLOCKED", "FAILED"]
+    },
+    "summary": {"type": "string"},
+    "gate": {"type": ["string", "null"]},
+    "completed": {"type": "array", "items": {"type": "string"}},
+    "remaining": {"type": "array", "items": {"type": "string"}},
+    "evidence": {"type": "array", "items": {"type": "string"}}
+  }
+}
