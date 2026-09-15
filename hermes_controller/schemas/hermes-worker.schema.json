@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hermes Controller worker descriptor", "type": "object",
+  "required": ["worker_id", "platform", "environment", "capabilities", "max_concurrent_jobs"],
+  "properties": {"worker_id": {"type": "string"}, "platform": {"enum": ["linux", "windows"]}, "environment": {"type": "string"}, "capabilities": {"type": "array", "items": {"type": "string"}}, "max_concurrent_jobs": {"type": "integer", "minimum": 1}},
+  "additionalProperties": true
+}

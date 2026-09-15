@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hermes Controller task snapshot",
+  "type": "object",
+  "required": ["brain", "project", "repository", "ref", "task_type", "platform", "required_capabilities", "execution_profile", "human_gates", "idempotency_policy"],
+  "properties": {
+    "brain": {"type": "object", "required": ["repository", "ref", "commit", "task_file"]},
+    "project": {"type": "string"}, "repository": {"type": "string"}, "ref": {"type": "string"},
+    "task_type": {"type": "string"}, "platform": {"enum": ["linux", "windows"]},
+    "required_capabilities": {"type": "array", "items": {"type": "string"}},
+    "execution_profile": {"type": "string"},
+    "human_gates": {"type": "array", "items": {"enum": ["WINDOWS_FINAL_RENDER_REQUIRED", "YOUTUBE_PUBLICATION_APPROVAL", "LICENSE_REVIEW_REQUIRED"]}},
+    "idempotency_policy": {"enum": ["safe_retry", "manual_reconcile"]},
+    "depends_on": {"type": "string"}, "idempotency_key": {"type": "string"}
+  }, "additionalProperties": true
+}

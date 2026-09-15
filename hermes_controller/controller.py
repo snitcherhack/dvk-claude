@@ -1,0 +1,237 @@
+"""Durable local job, lease and result state machine for Hermes."""
+
+from __future__ import annotations
+
+import json
+import secrets
+import sqlite3
+import uuid
+from pathlib import Path
+from typing import Any
+
+from .clock import MonotonicClock
+
+LEASE_DURATION_MS = 180_000
+WORKER_OFFLINE_MS = 90_000
+CODEX_STATUSES = {"DONE", "WAIT_USER", "BLOCKED", "FAILED"}
+
+
+class ControllerError(RuntimeError):
+    pass
+
+
+class StaleResultError(ControllerError):
+    pass
+
+
+class Controller:
+    """Local-only Controller. All state belongs under the caller's runtime root."""
+
+    def __init__(self, runtime_root: str | Path, *, clock: Any | None = None) -> None:
+        self.root = Path(runtime_root)
+        for name in ("runs", "artifacts", "locks", "logs"):
+            (self.root / name).mkdir(parents=True, exist_ok=True)
+        self.clock = clock or MonotonicClock()
+        self.db = sqlite3.connect(self.root / "controller.db", isolation_level=None)
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA foreign_keys = ON")
+        self.db.execute("PRAGMA journal_mode = WAL")
+        self._create_schema()
+
+    def close(self) -> None:
+        self.db.close()
+
+    def _create_schema(self) -> None:
+        self.db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS workers (
+              worker_id TEXT PRIMARY KEY, descriptor_json TEXT NOT NULL,
+              registered_at INTEGER NOT NULL, last_heartbeat_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS jobs (
+              job_id TEXT PRIMARY KEY, task_json TEXT NOT NULL,
+              state TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0,
+              active_run_id TEXT, idempotency_key TEXT UNIQUE,
+              idempotent INTEGER NOT NULL, dependency_job_id TEXT,
+              created_at INTEGER NOT NULL,
+              FOREIGN KEY(dependency_job_id) REFERENCES jobs(job_id)
+            );
+            CREATE TABLE IF NOT EXISTS runs (
+              run_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, worker_id TEXT NOT NULL,
+              attempt INTEGER NOT NULL, lease_id TEXT NOT NULL, lease_token TEXT NOT NULL,
+              state TEXT NOT NULL, claimed_at INTEGER NOT NULL,
+              lease_expires_at INTEGER NOT NULL, result_json TEXT,
+              FOREIGN KEY(job_id) REFERENCES jobs(job_id),
+              FOREIGN KEY(worker_id) REFERENCES workers(worker_id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS one_attempt_per_job
+              ON runs(job_id, attempt);
+            CREATE TABLE IF NOT EXISTS events (
+              event_id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at INTEGER NOT NULL,
+              entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
+              event_type TEXT NOT NULL, payload_json TEXT NOT NULL
+            );
+            """
+        )
+
+    def _event(self, entity_type: str, entity_id: str, event_type: str, **payload: Any) -> None:
+        self.db.execute(
+            "INSERT INTO events VALUES (NULL, ?, ?, ?, ?, ?)",
+            (self.clock.now(), entity_type, entity_id, event_type, json.dumps(payload, sort_keys=True)),
+        )
+
+    def register_worker(self, worker: dict[str, Any]) -> str:
+        self._validate_worker(worker)
+        now = self.clock.now()
+        self.db.execute(
+            "INSERT INTO workers VALUES (?, ?, ?, ?) ON CONFLICT(worker_id) DO UPDATE SET descriptor_json=excluded.descriptor_json, last_heartbeat_at=excluded.last_heartbeat_at",
+            (worker["worker_id"], json.dumps(worker, sort_keys=True), now, now),
+        )
+        self._event("worker", worker["worker_id"], "WORKER_REGISTERED")
+        return worker["worker_id"]
+
+    def heartbeat_worker(self, worker_id: str) -> None:
+        cursor = self.db.execute("UPDATE workers SET last_heartbeat_at=? WHERE worker_id=?", (self.clock.now(), worker_id))
+        if not cursor.rowcount:
+            raise ControllerError(f"unknown worker: {worker_id}")
+        self._event("worker", worker_id, "WORKER_HEARTBEAT")
+
+    def worker_status(self, worker_id: str) -> dict[str, Any]:
+        row = self.db.execute("SELECT last_heartbeat_at FROM workers WHERE worker_id=?", (worker_id,)).fetchone()
+        if row is None:
+            raise ControllerError(f"unknown worker: {worker_id}")
+        age = self.clock.now() - row["last_heartbeat_at"]
+        return {"worker_id": worker_id, "state": "OFFLINE" if age > WORKER_OFFLINE_MS else "ONLINE", "heartbeat_age_ms": age}
+
+    def enqueue(self, task: dict[str, Any]) -> str:
+        self._validate_task(task)
+        key = task.get("idempotency_key")
+        if key:
+            row = self.db.execute("SELECT job_id FROM jobs WHERE idempotency_key=?", (key,)).fetchone()
+            if row:
+                return row["job_id"]
+        job_id = task.get("job_id") or str(uuid.uuid4())
+        policy = task["idempotency_policy"]
+        self.db.execute(
+            "INSERT INTO jobs VALUES (?, ?, 'QUEUED', 0, NULL, ?, ?, ?, ?)",
+            (job_id, json.dumps(task, sort_keys=True), key, int(policy == "safe_retry"), task.get("depends_on"), self.clock.now()),
+        )
+        self._event("job", job_id, "JOB_ENQUEUED", task_type=task["task_type"])
+        return job_id
+
+    def claim(self, worker_id: str) -> dict[str, Any] | None:
+        now = self.clock.now()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            worker = self.db.execute("SELECT descriptor_json FROM workers WHERE worker_id=?", (worker_id,)).fetchone()
+            if worker is None:
+                raise ControllerError(f"unknown worker: {worker_id}")
+            # A claim is also an authenticated liveness signal in this local API.
+            self.db.execute("UPDATE workers SET last_heartbeat_at=? WHERE worker_id=?", (now, worker_id))
+            descriptor = json.loads(worker["descriptor_json"])
+            rows = self.db.execute(
+                """SELECT j.* FROM jobs j LEFT JOIN jobs parent ON parent.job_id=j.dependency_job_id
+                   WHERE j.state='QUEUED' AND (j.dependency_job_id IS NULL OR parent.state='DONE')
+                   ORDER BY j.created_at, j.job_id"""
+            ).fetchall()
+            for job in rows:
+                task = json.loads(job["task_json"])
+                if not self._worker_matches(descriptor, task):
+                    continue
+                attempt = job["attempt"] + 1
+                run_id, lease_id = str(uuid.uuid4()), str(uuid.uuid4())
+                token = secrets.token_urlsafe(32)
+                self.db.execute("UPDATE jobs SET state='RUNNING', attempt=?, active_run_id=? WHERE job_id=? AND state='QUEUED'", (attempt, run_id, job["job_id"]))
+                self.db.execute(
+                    "INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?, NULL)",
+                    (run_id, job["job_id"], worker_id, attempt, lease_id, token, now, now + LEASE_DURATION_MS),
+                )
+                self._event("run", run_id, "RUN_CLAIMED", job_id=job["job_id"], attempt=attempt, worker_id=worker_id)
+                self.db.execute("COMMIT")
+                return {"job_id": job["job_id"], "run_id": run_id, "attempt": attempt, "lease_id": lease_id, "lease_token": token, "task": task}
+            self.db.execute("COMMIT")
+            return None
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
+    def heartbeat_run(self, run_id: str, lease_id: str, lease_token: str) -> None:
+        now = self.clock.now()
+        cursor = self.db.execute(
+            "UPDATE runs SET lease_expires_at=? WHERE run_id=? AND lease_id=? AND lease_token=? AND state='RUNNING' AND lease_expires_at>=?",
+            (now + LEASE_DURATION_MS, run_id, lease_id, lease_token, now),
+        )
+        if not cursor.rowcount:
+            raise StaleResultError("lease is not active")
+        self._event("run", run_id, "LEASE_RENEWED")
+
+    def reconcile_expired_leases(self) -> list[str]:
+        now = self.clock.now()
+        expired = self.db.execute("SELECT * FROM runs WHERE state='RUNNING' AND lease_expires_at < ?", (now,)).fetchall()
+        affected: list[str] = []
+        for run in expired:
+            self.db.execute("UPDATE runs SET state='STALE' WHERE run_id=?", (run["run_id"],))
+            target = "QUEUED" if run["job_id"] and self._job_is_idempotent(run["job_id"]) else "NEEDS_RECONCILIATION"
+            self.db.execute("UPDATE jobs SET state=?, active_run_id=NULL WHERE job_id=? AND active_run_id=?", (target, run["job_id"], run["run_id"]))
+            self._event("run", run["run_id"], "LEASE_EXPIRED", job_id=run["job_id"], disposition=target)
+            affected.append(run["run_id"])
+        return affected
+
+    def ingest_result(self, envelope: dict[str, Any]) -> None:
+        self._validate_envelope(envelope)
+        run = self.db.execute("SELECT * FROM runs WHERE run_id=?", (envelope["run_id"],)).fetchone()
+        if run is None or run["state"] != "RUNNING":
+            raise StaleResultError("run is stale or unknown")
+        if any(run[key] != envelope[key] for key in ("job_id", "worker_id", "lease_id", "attempt")) or run["lease_token"] != envelope["lease_token"]:
+            raise StaleResultError("result does not own active lease")
+        job = self.db.execute("SELECT active_run_id FROM jobs WHERE job_id=?", (run["job_id"],)).fetchone()
+        if job is None or job["active_run_id"] != run["run_id"]:
+            raise StaleResultError("result is not the active attempt")
+        outcome = envelope["codex_result"]["status"]
+        self.db.execute("UPDATE runs SET state=?, result_json=? WHERE run_id=?", (outcome, json.dumps(envelope, sort_keys=True), run["run_id"]))
+        self.db.execute("UPDATE jobs SET state=?, active_run_id=NULL WHERE job_id=?", (outcome, run["job_id"]))
+        self._event("run", run["run_id"], "RESULT_INGESTED", outcome=outcome, gate=envelope["codex_result"]["gate"])
+
+    def status(self, job_id: str) -> dict[str, Any]:
+        job = self.db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        if job is None:
+            raise ControllerError(f"unknown job: {job_id}")
+        runs = self.db.execute("SELECT run_id, attempt, worker_id, state, lease_expires_at FROM runs WHERE job_id=? ORDER BY attempt", (job_id,)).fetchall()
+        return {"job_id": job_id, "state": job["state"], "attempt": job["attempt"], "active_run_id": job["active_run_id"], "runs": [dict(row) for row in runs]}
+
+    def events(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.db.execute("SELECT * FROM events ORDER BY event_id")]
+
+    def _job_is_idempotent(self, job_id: str) -> bool:
+        return bool(self.db.execute("SELECT idempotent FROM jobs WHERE job_id=?", (job_id,)).fetchone()["idempotent"])
+
+    @staticmethod
+    def _worker_matches(worker: dict[str, Any], task: dict[str, Any]) -> bool:
+        return worker["platform"] == task["platform"] and set(task["required_capabilities"]).issubset(worker["capabilities"])
+
+    @staticmethod
+    def _validate_worker(worker: dict[str, Any]) -> None:
+        required = {"worker_id", "platform", "environment", "capabilities", "max_concurrent_jobs"}
+        if not required.issubset(worker) or worker["platform"] not in {"linux", "windows"} or not isinstance(worker["capabilities"], list):
+            raise ControllerError("invalid worker descriptor")
+
+    @staticmethod
+    def _validate_task(task: dict[str, Any]) -> None:
+        required = {"brain", "project", "repository", "ref", "task_type", "platform", "required_capabilities", "execution_profile", "human_gates", "idempotency_policy"}
+        if not required.issubset(task) or task["idempotency_policy"] not in {"safe_retry", "manual_reconcile"}:
+            raise ControllerError("invalid task snapshot")
+        brain = task["brain"]
+        if not {"repository", "ref", "commit", "task_file"}.issubset(brain):
+            raise ControllerError("task requires immutable brain reference")
+
+    @staticmethod
+    def _validate_envelope(envelope: dict[str, Any]) -> None:
+        required = {"job_id", "run_id", "attempt", "worker_id", "lease_id", "lease_token", "started_at", "finished_at", "codex_result", "artifacts", "hashes"}
+        if not required.issubset(envelope):
+            raise ControllerError("invalid result envelope")
+        result = envelope["codex_result"]
+        if not isinstance(result, dict) or result.get("status") not in CODEX_STATUSES:
+            raise ControllerError("invalid codex result")
+        result_required = {"status", "summary", "gate", "completed", "remaining", "evidence"}
+        if not result_required.issubset(result):
+            raise ControllerError("codex result does not match Hermes runner contract")
