@@ -1,4 +1,4 @@
-"""Clock abstraction: production uses monotonic time; tests provide a fake."""
+"""Clock abstraction: production uses persistent wall-clock time; tests use a fake."""
 
 from __future__ import annotations
 
@@ -6,8 +6,14 @@ import time
 
 
 class MonotonicClock:
+    """Compatibility name for the original clock.
+
+    Lease timestamps are stored in SQLite, so they must survive a controller
+    restart.  Epoch milliseconds, unlike monotonic process time, can be safely
+    compared by a new process.
+    """
     def now(self) -> int:
-        return time.monotonic_ns() // 1_000_000
+        return time.time_ns() // 1_000_000
 
 
 class FakeClock:

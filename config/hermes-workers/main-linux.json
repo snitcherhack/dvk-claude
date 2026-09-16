@@ -1,0 +1,1 @@
+{"controller_url":"http://127.0.0.1:8787","token_env":"HERMES_MAIN_LINUX_TOKEN","state_file":"runtime/main-linux-state.json","worker":{"worker_id":"main-linux","platform":"linux","environment":"WSL/Kali","capabilities":["codex","git","python","tests","image_qa","network"],"max_concurrent_jobs":1}}

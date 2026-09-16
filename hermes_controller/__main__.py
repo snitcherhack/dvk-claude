@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
+from .api import serve
 from .controller import Controller
+from .worker import WorkerDaemon
 
 
 def _read(path: str) -> dict:
@@ -27,9 +30,33 @@ def main() -> None:
     commands.add_parser("worker-status").add_argument("worker_id")
     commands.add_parser("reconcile-leases")
     commands.add_parser("status").add_argument("job_id")
+    serve_parser = commands.add_parser("serve")
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", type=int, default=8787)
+    serve_parser.add_argument("--enrollment-token-env", action="append", default=[], metavar="WORKER_ID=ENV_VAR")
+    worker = commands.add_parser("worker")
+    worker_sub = worker.add_subparsers(dest="worker_command", required=True)
+    for name in ("run", "once"):
+        worker_sub.add_parser(name).add_argument("config_file")
     args = parser.parse_args()
+    if args.command == "worker":
+        daemon = WorkerDaemon.from_file(args.config_file)
+        if args.worker_command == "once":
+            daemon.register(); print(json.dumps({"worked": daemon.once()}))
+        else:
+            daemon.run()
+        return
     controller = Controller(args.runtime_root)
     try:
+        if args.command == "serve":
+            tokens = {}
+            for item in args.enrollment_token_env:
+                worker_id, env_name = item.split("=", 1)
+                tokens[worker_id] = os.environ[env_name]
+            server = serve(controller, args.host, args.port, tokens)
+            try: server.serve_forever()
+            finally: server.server_close()
+            return
         if args.command == "register-worker": out = controller.register_worker(_read(args.json_file))
         elif args.command == "enqueue": out = controller.enqueue(_read(args.json_file))
         elif args.command == "claim": out = controller.claim(args.worker_id)

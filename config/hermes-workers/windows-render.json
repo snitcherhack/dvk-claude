@@ -1,0 +1,1 @@
+{"controller_url":"http://127.0.0.1:8787","token_env":"HERMES_WINDOWS_RENDER_TOKEN","state_file":"runtime/windows-render-state.json","enabled":false,"worker":{"worker_id":"windows-render","platform":"windows","environment":"Windows","capabilities":["ffmpeg","final_render","mp4_qa","artifact_hash"],"max_concurrent_jobs":1}}

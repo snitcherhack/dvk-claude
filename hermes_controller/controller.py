@@ -6,6 +6,8 @@ import json
 import secrets
 import sqlite3
 import uuid
+import hashlib
+import hmac
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +34,7 @@ class Controller:
         for name in ("runs", "artifacts", "locks", "logs"):
             (self.root / name).mkdir(parents=True, exist_ok=True)
         self.clock = clock or MonotonicClock()
-        self.db = sqlite3.connect(self.root / "controller.db", isolation_level=None)
+        self.db = sqlite3.connect(self.root / "controller.db", isolation_level=None, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.execute("PRAGMA journal_mode = WAL")
@@ -47,6 +49,10 @@ class Controller:
             CREATE TABLE IF NOT EXISTS workers (
               worker_id TEXT PRIMARY KEY, descriptor_json TEXT NOT NULL,
               registered_at INTEGER NOT NULL, last_heartbeat_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS worker_credentials (
+              worker_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL,
+              created_at INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS jobs (
               job_id TEXT PRIMARY KEY, task_json TEXT NOT NULL,
@@ -90,6 +96,20 @@ class Controller:
         self._event("worker", worker["worker_id"], "WORKER_REGISTERED")
         return worker["worker_id"]
 
+    def provision_worker_token(self, worker_id: str, token: str) -> None:
+        """Store only a PBKDF2 derivation for a worker credential."""
+        if not worker_id or not token:
+            raise ControllerError("worker_id and token are required")
+        digest = self._hash_token(token)
+        self.db.execute(
+            "INSERT INTO worker_credentials VALUES (?, ?, ?) ON CONFLICT(worker_id) DO UPDATE SET token_hash=excluded.token_hash, created_at=excluded.created_at",
+            (worker_id, digest, self.clock.now()),
+        )
+
+    def authenticate_worker(self, worker_id: str, token: str) -> bool:
+        row = self.db.execute("SELECT token_hash FROM worker_credentials WHERE worker_id=?", (worker_id,)).fetchone()
+        return bool(row and hmac.compare_digest(row["token_hash"], self._hash_token(token, row["token_hash"])))
+
     def heartbeat_worker(self, worker_id: str) -> None:
         cursor = self.db.execute("UPDATE workers SET last_heartbeat_at=? WHERE worker_id=?", (self.clock.now(), worker_id))
         if not cursor.rowcount:
@@ -129,6 +149,13 @@ class Controller:
             # A claim is also an authenticated liveness signal in this local API.
             self.db.execute("UPDATE workers SET last_heartbeat_at=? WHERE worker_id=?", (now, worker_id))
             descriptor = json.loads(worker["descriptor_json"])
+            active = self.db.execute(
+                "SELECT COUNT(*) AS n FROM runs WHERE worker_id=? AND state='RUNNING' AND lease_expires_at>=?",
+                (worker_id, now),
+            ).fetchone()["n"]
+            if active >= descriptor["max_concurrent_jobs"]:
+                self.db.execute("COMMIT")
+                return None
             rows = self.db.execute(
                 """SELECT j.* FROM jobs j LEFT JOIN jobs parent ON parent.job_id=j.dependency_job_id
                    WHERE j.state='QUEUED' AND (j.dependency_job_id IS NULL OR parent.state='DONE')
@@ -180,6 +207,9 @@ class Controller:
     def ingest_result(self, envelope: dict[str, Any]) -> None:
         self._validate_envelope(envelope)
         run = self.db.execute("SELECT * FROM runs WHERE run_id=?", (envelope["run_id"],)).fetchone()
+        serialized = json.dumps(envelope, sort_keys=True)
+        if run is not None and run["state"] in CODEX_STATUSES and run["result_json"] == serialized:
+            return
         if run is None or run["state"] != "RUNNING":
             raise StaleResultError("run is stale or unknown")
         if any(run[key] != envelope[key] for key in ("job_id", "worker_id", "lease_id", "attempt")) or run["lease_token"] != envelope["lease_token"]:
@@ -188,7 +218,7 @@ class Controller:
         if job is None or job["active_run_id"] != run["run_id"]:
             raise StaleResultError("result is not the active attempt")
         outcome = envelope["codex_result"]["status"]
-        self.db.execute("UPDATE runs SET state=?, result_json=? WHERE run_id=?", (outcome, json.dumps(envelope, sort_keys=True), run["run_id"]))
+        self.db.execute("UPDATE runs SET state=?, result_json=? WHERE run_id=?", (outcome, serialized, run["run_id"]))
         self.db.execute("UPDATE jobs SET state=?, active_run_id=NULL WHERE job_id=?", (outcome, run["job_id"]))
         self._event("run", run["run_id"], "RESULT_INGESTED", outcome=outcome, gate=envelope["codex_result"]["gate"])
 
@@ -204,6 +234,18 @@ class Controller:
 
     def _job_is_idempotent(self, job_id: str) -> bool:
         return bool(self.db.execute("SELECT idempotent FROM jobs WHERE job_id=?", (job_id,)).fetchone()["idempotent"])
+
+    @staticmethod
+    def _hash_token(token: str, encoded: str | None = None) -> str:
+        if encoded:
+            algorithm, rounds, salt, _digest = encoded.split("$", 3)
+            if algorithm != "pbkdf2_sha256":
+                raise ControllerError("unsupported worker credential")
+            salt_bytes = bytes.fromhex(salt)
+        else:
+            rounds, salt_bytes = 310_000, secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac("sha256", token.encode("utf-8"), salt_bytes, int(rounds)).hex()
+        return f"pbkdf2_sha256${rounds}${salt_bytes.hex()}${digest}"
 
     @staticmethod
     def _worker_matches(worker: dict[str, Any], task: dict[str, Any]) -> bool:
