@@ -10,13 +10,42 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME_DIR/.local/state}/hermes"
 SCHEMA_FILE="$SCRIPT_DIR/hermes-run-result.schema.json"
 SMOKE_TEST=0
 PASSTHROUGH_ARGS=()
+WORKING_DIRECTORY="$(pwd)"
+REQUESTED_TASK_FILE=""
+REQUESTED_RUN_OUTPUT_DIR=""
+EXECUTION_PROFILE="hermes"
+TIMEOUT_SECONDS=""
+DRY_RUN=0
 
-for arg in "$@"; do
-    if [[ "$arg" == "--smoke-test" ]]; then
-        SMOKE_TEST=1
-    else
-        PASSTHROUGH_ARGS+=("$arg")
-    fi
+usage() {
+    cat <<'EOF'
+Uso: cxh-run.sh [opciones]
+
+Opciones:
+  --smoke-test
+  --working-directory RUTA
+  --task-file RUTA
+  --run-output-dir RUTA
+  --execution-profile PERFIL
+  --timeout-seconds SEGUNDOS
+  --dry-run
+  -h, --help
+EOF
+}
+
+while (( $# )); do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --smoke-test) SMOKE_TEST=1 ;;
+        --working-directory) WORKING_DIRECTORY="${2:?--working-directory requiere valor}"; shift ;;
+        --task-file) REQUESTED_TASK_FILE="${2:?--task-file requiere valor}"; shift ;;
+        --run-output-dir) REQUESTED_RUN_OUTPUT_DIR="${2:?--run-output-dir requiere valor}"; shift ;;
+        --execution-profile) EXECUTION_PROFILE="${2:?--execution-profile requiere valor}"; shift ;;
+        --timeout-seconds) TIMEOUT_SECONDS="${2:?--timeout-seconds requiere valor}"; shift ;;
+        --dry-run) DRY_RUN=1 ;;
+        *) PASSTHROUGH_ARGS+=("$1") ;;
+    esac
+    shift
 done
 
 resolve_brain() {
@@ -40,6 +69,21 @@ if [[ -z "$BRAIN_DIR" ]]; then
 fi
 
 TASK_FILE="$BRAIN_DIR/proyectos/youtube/TAREA_ACTIVA.md"
+if [[ -n "$REQUESTED_TASK_FILE" ]]; then
+    TASK_FILE="$REQUESTED_TASK_FILE"
+fi
+if [[ "$EXECUTION_PROFILE" != "hermes" ]]; then
+    echo "ERROR: execution profile no permitido: $EXECUTION_PROFILE" >&2
+    exit 2
+fi
+if [[ ! -d "$WORKING_DIRECTORY" ]]; then
+    echo "ERROR: cwd inexistente: $WORKING_DIRECTORY" >&2
+    exit 2
+fi
+if [[ "$(realpath -m "$TASK_FILE")" != "$(realpath -m "$BRAIN_DIR")"/* ]]; then
+    echo "ERROR: task file fuera del brain autorizado" >&2
+    exit 2
+fi
 if [[ ! -f "$TASK_FILE" ]]; then
     echo "ERROR: no existe la TAREA_ACTIVA: $TASK_FILE" >&2
     exit 1
@@ -49,9 +93,8 @@ if [[ ! -f "$SCHEMA_FILE" ]]; then
     exit 1
 fi
 
-for arg in "$@"; do
-    if [[ "$arg" == "--dry-run" ]]; then
-        echo "cwd: $(pwd)"
+if (( DRY_RUN )); then
+        echo "cwd: $WORKING_DIRECTORY"
         echo "brain: $BRAIN_DIR"
         echo "task: $TASK_FILE"
         echo "qa: $QA_DIR"
@@ -59,8 +102,7 @@ for arg in "$@"; do
         echo "schema: $SCHEMA_FILE"
         echo "command: codex exec --profile hermes --sandbox workspace-write --output-schema $SCHEMA_FILE --output-last-message <result> <bootstrap>"
         exit 0
-    fi
-done
+fi
 
 if (( SMOKE_TEST )) && (( ${#PASSTHROUGH_ARGS[@]} > 0 )); then
     echo "ERROR: --smoke-test no acepta argumentos adicionales." >&2
@@ -106,7 +148,7 @@ acquire_lock
 trap release_lock EXIT HUP INT TERM
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-RUN_DIR="$STATE_DIR/$RUN_ID"
+RUN_DIR="${REQUESTED_RUN_OUTPUT_DIR:-$STATE_DIR/$RUN_ID}"
 mkdir -p "$RUN_DIR"
 LOG_FILE="$RUN_DIR/codex-exec.log"
 RESULT_FILE="$RUN_DIR/result.json"
@@ -132,7 +174,16 @@ set +e
 if (( SMOKE_TEST )); then
     ARGS+=(--config sandbox_workspace_write.network_access=false)
 fi
-codex "${ARGS[@]}" "$BOOTSTRAP" "${PASSTHROUGH_ARGS[@]}" 2>&1 | tee "$LOG_FILE"
+cd "$WORKING_DIRECTORY"
+if [[ -n "$TIMEOUT_SECONDS" ]]; then
+    if ! [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+        echo "ERROR: timeout invÃ¡lido" >&2
+        exit 2
+    fi
+    timeout --foreground "$TIMEOUT_SECONDS" codex "${ARGS[@]}" "$BOOTSTRAP" "${PASSTHROUGH_ARGS[@]}" 2>&1 | tee "$LOG_FILE"
+else
+    codex "${ARGS[@]}" "$BOOTSTRAP" "${PASSTHROUGH_ARGS[@]}" 2>&1 | tee "$LOG_FILE"
+fi
 CODEX_STATUS="${PIPESTATUS[0]}"
 set -e
 echo "Hermes exec log: $LOG_FILE"

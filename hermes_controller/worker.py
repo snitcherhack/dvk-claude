@@ -10,7 +10,7 @@ from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
-from .adapters import ExecutionAdapter, MockAdapter
+from .adapters import CxhRunAdapter, ExecutionAdapter, MockAdapter
 
 
 class TransportError(RuntimeError): pass
@@ -39,7 +39,7 @@ class WorkerDaemon:
         self.config = config
         self.worker = config["worker"]
         self.client = HTTPControllerClient(config["controller_url"], self.worker["worker_id"], config["token"])
-        self.adapter = adapter or MockAdapter()
+        self.adapter = adapter or self._adapter_from_config(config.get("adapter", {"kind": "mock"}))
         self.heartbeat_interval_s = config.get("heartbeat_interval_ms", 30_000) / 1000
         self.backoff_s, self.max_backoff_s = config.get("retry_backoff_ms", 1_000) / 1000, config.get("max_backoff_ms", 30_000) / 1000
         self.state_path = Path(config.get("state_file", "worker-state.json"))
@@ -55,6 +55,18 @@ class WorkerDaemon:
             import os
             config["token"] = os.environ[token_env]
         return cls(config, adapter)
+
+    @staticmethod
+    def _adapter_from_config(config: dict[str, Any]) -> ExecutionAdapter:
+        kind = config.get("kind", "mock")
+        if kind == "mock": return MockAdapter()
+        if kind != "cxh-run": raise ValueError("unknown worker adapter")
+        import os
+        runner = os.environ[config["runner_path_env"]]
+        roots = [item for item in os.environ[config["authorized_roots_env"]].split(os.pathsep) if item]
+        profiles = set(config.get("execution_profiles", ["hermes"]))
+        types = set(config.get("task_types", ["development", "hermes_smoke"]))
+        return CxhRunAdapter(runner_path=runner, authorized_roots=roots, execution_profiles=profiles, task_types=types)
 
     def _load_state(self) -> dict[str, Any] | None:
         return json.loads(self.state_path.read_text()) if self.state_path.exists() else None
