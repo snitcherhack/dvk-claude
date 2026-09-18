@@ -10,7 +10,7 @@ from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
-from .adapters import CxhRunAdapter, EngineRoutingAdapter, ExecutionAdapter, MockAdapter
+from .adapters import ClaudeAgentAdapter, CxhRunAdapter, EngineRoutingAdapter, ExecutionAdapter, MockAdapter
 
 
 class TransportError(RuntimeError): pass
@@ -63,20 +63,33 @@ class WorkerDaemon:
             return cls._adapter_from_config(config.get("adapter", {"kind": "mock"}))
         if not isinstance(engines, dict) or not engines:
             raise ValueError("adapters must be a non-empty object")
+        unknown = set(engines) - {"codex", "claude", "hybrid", "native"}
+        if unknown:
+            raise ValueError(f"unknown execution engine adapters: {sorted(unknown)}")
+        default_engine = config.get("default_execution_engine", "codex")
         adapters = {name: cls._adapter_from_config(spec) for name, spec in engines.items()}
-        return EngineRoutingAdapter(adapters, default_engine=config.get("default_execution_engine", "codex"))
+        return EngineRoutingAdapter(adapters, default_engine=default_engine)
 
     @staticmethod
     def _adapter_from_config(config: dict[str, Any]) -> ExecutionAdapter:
         kind = config.get("kind", "mock")
         if kind == "mock": return MockAdapter()
-        if kind != "cxh-run": raise ValueError("unknown worker adapter")
         import os
-        runner = os.environ[config["runner_path_env"]]
-        roots = [item for item in os.environ[config["authorized_roots_env"]].split(os.pathsep) if item]
-        profiles = set(config.get("execution_profiles", ["hermes"]))
-        types = set(config.get("task_types", ["development", "hermes_smoke"]))
-        return CxhRunAdapter(runner_path=runner, authorized_roots=roots, execution_profiles=profiles, task_types=types)
+        if kind == "cxh-run":
+            runner = os.environ[config["runner_path_env"]]
+            roots = [item for item in os.environ[config["authorized_roots_env"]].split(os.pathsep) if item]
+            profiles = set(config.get("execution_profiles", ["hermes"]))
+            types = set(config.get("task_types", ["development", "hermes_smoke"]))
+            return CxhRunAdapter(runner_path=runner, authorized_roots=roots, execution_profiles=profiles, task_types=types)
+        if kind == "claude-agent":
+            roots = [item for item in os.environ[config["authorized_roots_env"]].split(os.pathsep) if item]
+            profiles = set(config.get("execution_profiles", ["claude_smoke", "hermes"]))
+            types = set(config.get("task_types", ["claude_smoke", "development"]))
+            return ClaudeAgentAdapter(
+                authorized_roots=roots, execution_profiles=profiles, task_types=types,
+                max_turns=config.get("max_turns", 6), subscription_only=config.get("subscription_only", True),
+            )
+        raise ValueError("unknown worker adapter")
 
     def _load_state(self) -> dict[str, Any] | None:
         return json.loads(self.state_path.read_text()) if self.state_path.exists() else None
@@ -89,6 +102,12 @@ class WorkerDaemon:
             self.state_path.write_text(json.dumps({"claim": claim, "pending_envelope": pending_envelope}, sort_keys=True), encoding="utf-8")
 
     def register(self) -> None: self.client.enrol(self.worker)
+
+    def _execution_engine_for_task(self, task: dict[str, Any]) -> str:
+        explicit = task.get("execution_engine")
+        if explicit in {"codex", "claude", "hybrid", "native"}:
+            return explicit
+        return "codex" if "codex" in task.get("required_capabilities", []) else "native"
 
     def once(self) -> bool:
         self.client.heartbeat_worker()
@@ -110,7 +129,7 @@ class WorkerDaemon:
             raise RuntimeError("adapter did not return a result")
         result = result_box[0]
         now = time.time_ns() // 1_000_000
-        envelope = {**{key: claim[key] for key in ("job_id", "run_id", "attempt", "lease_id", "lease_token")}, "worker_id": self.worker["worker_id"], "started_at": now, "finished_at": now, "codex_result": result.result(), "artifacts": [], "hashes": {}}
+        envelope = {**{key: claim[key] for key in ("job_id", "run_id", "attempt", "lease_id", "lease_token")}, "worker_id": self.worker["worker_id"], "started_at": now, "finished_at": now, "engine": self._execution_engine_for_task(claim["task"]), "engine_result": result.result(), "artifacts": [], "hashes": {}}
         self.pending_envelope = envelope; self._save_state(claim, envelope)
         self.client.ingest(envelope)
         self.pending_envelope = None; self.active_claim = None; self._save_state(None)

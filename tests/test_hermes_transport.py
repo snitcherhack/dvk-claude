@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 
 import pytest
 
 import hermes_controller.controller as controller_module
-from hermes_controller.adapters import EngineRoutingAdapter, MockAdapter
+from hermes_controller.adapters import ClaudeAgentAdapter, EngineRoutingAdapter, MockAdapter
 from hermes_controller.api import serve
 from hermes_controller.clock import FakeClock
 from hermes_controller.controller import Controller, StaleResultError
@@ -92,17 +93,47 @@ def test_j_duplicate_result_and_k_old_lease_rejected(api):
     with pytest.raises(TransportError): d.client.ingest({**item, "lease_id": "old"})
 
 
-def test_worker_config_supports_multiple_execution_engines(tmp_path):
+def test_worker_emits_engine_neutral_result_envelope(api):
+    controller, url, root = api
+    d = daemon(url, root)
+    d.register()
+    job = controller.enqueue(task())
+    assert d.once() and controller.status(job)["state"] == "DONE"
+    row = controller.db.execute("SELECT result_json FROM runs WHERE job_id=?", (job,)).fetchone()
+    payload = json.loads(row["result_json"])
+    assert payload["engine"] == "codex"
+    assert "engine_result" in payload and "codex_result" not in payload
+
+
+def test_native_worker_emits_native_engine(api):
+    controller, url, root = api
+    d = daemon(url, root, WINDOWS, "test-windows")
+    d.register()
+    job = controller.enqueue(task(platform="windows", capabilities=["final_render"], policy="manual_reconcile"))
+    assert d.once() and controller.status(job)["state"] == "DONE"
+    row = controller.db.execute("SELECT result_json FROM runs WHERE job_id=?", (job,)).fetchone()
+    payload = json.loads(row["result_json"])
+    assert payload["engine"] == "native"
+
+
+def test_worker_config_supports_multiple_execution_engines(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_TEST_ROOTS", str(tmp_path))
     config = {
         "controller_url": "http://127.0.0.1:1", "token": "test-main",
         "state_file": str(tmp_path / "worker.json"), "worker": MAIN,
         "default_execution_engine": "codex",
-        "adapters": {"codex": {"kind": "mock"}, "claude": {"kind": "mock"}},
+        "adapters": {
+            "codex": {"kind": "mock"},
+            "claude": {"kind": "claude-agent", "authorized_roots_env": "HERMES_TEST_ROOTS"},
+        },
     }
     worker = WorkerDaemon(config)
     assert isinstance(worker.adapter, EngineRoutingAdapter)
     assert worker.adapter.default_engine == "codex"
     assert set(worker.adapter.adapters) == {"codex", "claude"}
+    assert isinstance(worker.adapter.adapters["claude"], ClaudeAgentAdapter)
+    claude_default = WorkerDaemon({**config, "default_execution_engine": "claude"})
+    assert claude_default.adapter.default_engine == "claude"
 
 
 def test_l_two_daemons_one_claim_and_m_non_idempotent_not_redistributed(api, monkeypatch):

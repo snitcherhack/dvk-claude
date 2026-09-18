@@ -15,8 +15,8 @@ from .clock import MonotonicClock
 
 LEASE_DURATION_MS = 180_000
 WORKER_OFFLINE_MS = 90_000
-CODEX_STATUSES = {"DONE", "WAIT_USER", "BLOCKED", "FAILED"}
-ENGINE_CAPABILITIES = {"codex": {"codex"}, "claude": {"claude"}, "hybrid": {"codex", "claude"}}
+RESULT_STATUSES = {"DONE", "WAIT_USER", "BLOCKED", "FAILED"}
+ENGINE_CAPABILITIES = {"codex": {"codex"}, "claude": {"claude"}, "hybrid": {"codex", "claude"}, "native": set()}
 
 
 class ControllerError(RuntimeError):
@@ -209,19 +209,27 @@ class Controller:
         self._validate_envelope(envelope)
         run = self.db.execute("SELECT * FROM runs WHERE run_id=?", (envelope["run_id"],)).fetchone()
         serialized = json.dumps(envelope, sort_keys=True)
-        if run is not None and run["state"] in CODEX_STATUSES and run["result_json"] == serialized:
+        if run is not None and run["state"] in RESULT_STATUSES and run["result_json"] == serialized:
             return
         if run is None or run["state"] != "RUNNING":
             raise StaleResultError("run is stale or unknown")
         if any(run[key] != envelope[key] for key in ("job_id", "worker_id", "lease_id", "attempt")) or run["lease_token"] != envelope["lease_token"]:
             raise StaleResultError("result does not own active lease")
-        job = self.db.execute("SELECT active_run_id FROM jobs WHERE job_id=?", (run["job_id"],)).fetchone()
+        job = self.db.execute("SELECT active_run_id, task_json FROM jobs WHERE job_id=?", (run["job_id"],)).fetchone()
         if job is None or job["active_run_id"] != run["run_id"]:
             raise StaleResultError("result is not the active attempt")
-        outcome = envelope["codex_result"]["status"]
+        task = json.loads(job["task_json"])
+        expected_engine = self._task_engine(task)
+        actual_engine = envelope.get("engine")
+        if actual_engine is None and "codex_result" in envelope:
+            actual_engine = expected_engine
+        if actual_engine != expected_engine:
+            raise ControllerError("result engine does not match task")
+        result = self._result_payload(envelope)
+        outcome = result["status"]
         self.db.execute("UPDATE runs SET state=?, result_json=? WHERE run_id=?", (outcome, serialized, run["run_id"]))
         self.db.execute("UPDATE jobs SET state=?, active_run_id=NULL WHERE job_id=?", (outcome, run["job_id"]))
-        self._event("run", run["run_id"], "RESULT_INGESTED", outcome=outcome, gate=envelope["codex_result"]["gate"])
+        self._event("run", run["run_id"], "RESULT_INGESTED", outcome=outcome, gate=result["gate"], engine=actual_engine)
 
     def status(self, job_id: str) -> dict[str, Any]:
         job = self.db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -247,6 +255,13 @@ class Controller:
             rounds, salt_bytes = 310_000, secrets.token_bytes(16)
         digest = hashlib.pbkdf2_hmac("sha256", token.encode("utf-8"), salt_bytes, int(rounds)).hex()
         return f"pbkdf2_sha256${rounds}${salt_bytes.hex()}${digest}"
+
+    @staticmethod
+    def _task_engine(task: dict[str, Any]) -> str:
+        explicit = task.get("execution_engine")
+        if explicit:
+            return explicit
+        return "codex" if "codex" in task.get("required_capabilities", []) else "native"
 
     @staticmethod
     def _worker_matches(worker: dict[str, Any], task: dict[str, Any]) -> bool:
@@ -275,13 +290,28 @@ class Controller:
                 raise ControllerError("execution_engine capabilities are missing")
 
     @staticmethod
+    def _result_payload(envelope: dict[str, Any]) -> dict[str, Any]:
+        if "engine_result" in envelope:
+            return envelope["engine_result"]
+        return envelope["codex_result"]
+
+    @staticmethod
     def _validate_envelope(envelope: dict[str, Any]) -> None:
-        required = {"job_id", "run_id", "attempt", "worker_id", "lease_id", "lease_token", "started_at", "finished_at", "codex_result", "artifacts", "hashes"}
+        required = {"job_id", "run_id", "attempt", "worker_id", "lease_id", "lease_token", "started_at", "finished_at", "artifacts", "hashes"}
         if not required.issubset(envelope):
             raise ControllerError("invalid result envelope")
-        result = envelope["codex_result"]
-        if not isinstance(result, dict) or result.get("status") not in CODEX_STATUSES:
-            raise ControllerError("invalid codex result")
+        has_engine_result = "engine_result" in envelope
+        has_legacy_result = "codex_result" in envelope
+        if has_engine_result == has_legacy_result:
+            raise ControllerError("result envelope must contain exactly one result payload")
+        if has_engine_result:
+            if envelope.get("engine") not in ENGINE_CAPABILITIES:
+                raise ControllerError("invalid result engine")
+        elif envelope.get("engine") not in {None, "codex"}:
+            raise ControllerError("legacy codex_result cannot use another engine")
+        result = Controller._result_payload(envelope)
+        if not isinstance(result, dict) or result.get("status") not in RESULT_STATUSES:
+            raise ControllerError("invalid engine result")
         result_required = {"status", "summary", "gate", "completed", "remaining", "evidence"}
         if not result_required.issubset(result):
-            raise ControllerError("codex result does not match Hermes runner contract")
+            raise ControllerError("engine result does not match Hermes runner contract")

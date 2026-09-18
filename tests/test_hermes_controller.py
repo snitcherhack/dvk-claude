@@ -32,10 +32,10 @@ def core(tmp_path):
     controller.close()
 
 
-def envelope(claim, status="DONE", gate=None):
+def envelope(claim, status="DONE", gate=None, worker_id="main-linux"):
     return {
         "job_id": claim["job_id"], "run_id": claim["run_id"], "attempt": claim["attempt"],
-        "worker_id": "main-linux", "lease_id": claim["lease_id"], "lease_token": claim["lease_token"],
+        "worker_id": worker_id, "lease_id": claim["lease_id"], "lease_token": claim["lease_token"],
         "started_at": 1_000, "finished_at": 1_001,
         "codex_result": {"status": status, "summary": "deterministic test", "gate": gate, "completed": [], "remaining": [], "evidence": []},
         "artifacts": [], "hashes": {},
@@ -50,6 +50,52 @@ def test_a_enqueue_claim_heartbeat_done(core):
     controller.heartbeat_run(claim["run_id"], claim["lease_id"], claim["lease_token"])
     controller.ingest_result(envelope(claim))
     assert controller.status(job)["state"] == "DONE"
+
+
+def test_engine_result_envelope_and_legacy_codex_result_are_both_supported(core):
+    controller, _, _ = core
+    modern_job = controller.enqueue(task())
+    modern_claim = controller.claim("main-linux")
+    modern = envelope(modern_claim)
+    modern["engine"] = "codex"
+    modern["engine_result"] = modern.pop("codex_result")
+    controller.ingest_result(modern)
+    assert controller.status(modern_job)["state"] == "DONE"
+
+    legacy_job = controller.enqueue({**task(), "idempotency_key": "legacy-result-test"})
+    legacy_claim = controller.claim("main-linux")
+    controller.ingest_result(envelope(legacy_claim))
+    assert controller.status(legacy_job)["state"] == "DONE"
+
+
+def test_legacy_result_is_supported_for_native_worker(core):
+    controller, _, _ = core
+    job = controller.enqueue(task(platform="windows", capabilities=["final_render"], policy="manual_reconcile"))
+    claim = controller.claim("windows-render")
+    controller.ingest_result(envelope(claim, worker_id="windows-render"))
+    assert controller.status(job)["state"] == "DONE"
+
+
+def test_result_envelope_rejects_ambiguous_payload(core):
+    controller, _, _ = core
+    controller.enqueue(task())
+    claim = controller.claim("main-linux")
+    ambiguous = envelope(claim)
+    ambiguous["engine"] = "codex"
+    ambiguous["engine_result"] = dict(ambiguous["codex_result"])
+    with pytest.raises(ControllerError):
+        controller.ingest_result(ambiguous)
+
+
+def test_result_engine_must_match_task(core):
+    controller, _, _ = core
+    controller.enqueue(task())
+    claim = controller.claim("main-linux")
+    wrong_engine = envelope(claim)
+    wrong_engine["engine"] = "claude"
+    wrong_engine["engine_result"] = wrong_engine.pop("codex_result")
+    with pytest.raises(ControllerError, match="does not match task"):
+        controller.ingest_result(wrong_engine)
 
 
 def test_worker_is_offline_after_configured_interval(core):

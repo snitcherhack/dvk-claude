@@ -59,6 +59,8 @@ def test_engine_router_selects_explicit_engine_and_preserves_default():
     assert router.execute({"execution_engine": "claude"}).summary == "claude"
     blocked = router.execute({"execution_engine": "hybrid"})
     assert blocked.status == "BLOCKED" and "not configured" in blocked.summary
+    native = router.execute({"required_capabilities": ["image_qa"]})
+    assert native.status == "BLOCKED" and "native" in native.summary
 
 
 def test_b_c_k_reject_invalid_root_profile_and_task_type(tmp_path):

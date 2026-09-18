@@ -1,7 +1,26 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Hermes Controller result envelope", "type": "object",
-  "required": ["job_id", "run_id", "attempt", "worker_id", "lease_id", "lease_token", "started_at", "finished_at", "codex_result", "artifacts", "hashes"],
-  "properties": {"job_id": {"type": "string"}, "run_id": {"type": "string"}, "attempt": {"type": "integer", "minimum": 1}, "worker_id": {"type": "string"}, "lease_id": {"type": "string"}, "lease_token": {"type": "string"}, "started_at": {"type": "integer"}, "finished_at": {"type": "integer"}, "codex_result": {"$ref": "../../hermes-run-result.schema.json"}, "artifacts": {"type": "array"}, "hashes": {"type": "object"}},
+  "title": "Hermes Controller result envelope",
+  "type": "object",
+  "required": ["job_id", "run_id", "attempt", "worker_id", "lease_id", "lease_token", "started_at", "finished_at", "artifacts", "hashes"],
+  "properties": {
+    "job_id": {"type": "string"},
+    "run_id": {"type": "string"},
+    "attempt": {"type": "integer", "minimum": 1},
+    "worker_id": {"type": "string"},
+    "lease_id": {"type": "string"},
+    "lease_token": {"type": "string"},
+    "started_at": {"type": "integer"},
+    "finished_at": {"type": "integer"},
+    "engine": {"enum": ["codex", "claude", "hybrid", "native"]},
+    "engine_result": {"$ref": "../../hermes-run-result.schema.json"},
+    "codex_result": {"$ref": "../../hermes-run-result.schema.json"},
+    "artifacts": {"type": "array"},
+    "hashes": {"type": "object"}
+  },
+  "oneOf": [
+    {"required": ["engine", "engine_result"], "not": {"required": ["codex_result"]}},
+    {"required": ["codex_result"], "not": {"required": ["engine_result"]}, "properties": {"engine": {"const": "codex"}}}
+  ],
   "additionalProperties": false
 }

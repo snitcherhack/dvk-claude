@@ -1,1 +1,41 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Hermes worker runtime configuration","type":"object","required":["controller_url","worker"],"properties":{"controller_url":{"type":"string"},"token_env":{"type":"string"},"state_file":{"type":"string"},"enabled":{"type":"boolean"},"adapter":{"type":"object","properties":{"kind":{"enum":["mock","cxh-run"]},"runner_path_env":{"type":"string"},"authorized_roots_env":{"type":"string"},"execution_profiles":{"type":"array","items":{"type":"string"}},"task_types":{"type":"array","items":{"type":"string"}}},"additionalProperties":false},"heartbeat_interval_ms":{"type":"integer","minimum":1,"default":30000},"retry_backoff_ms":{"type":"integer","minimum":1},"max_backoff_ms":{"type":"integer","minimum":1},"worker":{"$ref":"hermes-worker.schema.json"}},"additionalProperties":false}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hermes worker runtime configuration",
+  "type": "object",
+  "$defs": {
+    "adapter": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {"enum": ["mock", "cxh-run", "claude-agent"]},
+        "runner_path_env": {"type": "string"},
+        "authorized_roots_env": {"type": "string"},
+        "execution_profiles": {"type": "array", "items": {"type": "string"}},
+        "task_types": {"type": "array", "items": {"type": "string"}},
+        "max_turns": {"type": "integer", "minimum": 1, "maximum": 50},
+        "subscription_only": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["controller_url", "worker"],
+  "properties": {
+    "controller_url": {"type": "string"},
+    "token_env": {"type": "string"},
+    "state_file": {"type": "string"},
+    "enabled": {"type": "boolean"},
+    "adapter": {"$ref": "#/$defs/adapter"},
+    "adapters": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"enum": ["codex", "claude", "hybrid", "native"]},
+      "additionalProperties": {"$ref": "#/$defs/adapter"}
+    },
+    "default_execution_engine": {"enum": ["codex", "claude", "hybrid", "native"]},
+    "heartbeat_interval_ms": {"type": "integer", "minimum": 1, "default": 30000},
+    "retry_backoff_ms": {"type": "integer", "minimum": 1},
+    "max_backoff_ms": {"type": "integer", "minimum": 1},
+    "worker": {"$ref": "hermes-worker.schema.json"}
+  },
+  "additionalProperties": false
+}
