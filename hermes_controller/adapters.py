@@ -96,6 +96,7 @@ class ClaudeAgentAdapter:
         self, *, authorized_roots: list[str | os.PathLike[str]],
         execution_profiles: set[str] | None = None, task_types: set[str] | None = None,
         max_turns: int = 6, subscription_only: bool = True,
+        cli_path: str | os.PathLike[str] | None = None,
         runner: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.roots = [Path(item).resolve() for item in authorized_roots]
@@ -107,6 +108,7 @@ class ClaudeAgentAdapter:
             raise ValueError("invalid max_turns")
         self.max_turns = max_turns
         self.subscription_only = subscription_only
+        self.cli_path = Path(cli_path).resolve() if cli_path else None
         self.runner = runner
 
     def execute(self, task: dict[str, Any]) -> AdapterResult:
@@ -193,10 +195,14 @@ class ClaudeAgentAdapter:
                     "BLOCKED",
                     "subscription-only policy rejects external provider configuration: " + ", ".join(configured),
                 )
+            if self.cli_path is None:
+                raise AdapterExecutionError("BLOCKED", "subscription-only policy requires an authenticated Claude CLI path")
+        if self.cli_path is not None and not self.cli_path.is_file():
+            raise AdapterExecutionError("BLOCKED", "configured Claude CLI path is not available")
         try:
             import anyio
             from importlib.metadata import PackageNotFoundError, version
-            from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+            from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKError, ResultMessage, query
             from claude_agent_sdk.types import HookMatcher
         except ImportError as exc:
             raise AdapterExecutionError("BLOCKED", "claude-agent-sdk is not available") from exc
@@ -234,6 +240,7 @@ class ClaudeAgentAdapter:
                 f"TASK FILE: {request['task_file']}\n\n{request['task_text']}"
             )
             options = ClaudeAgentOptions(
+                cli_path=str(self.cli_path) if self.cli_path is not None else None,
                 cwd=request["cwd"],
                 add_dirs=request["authorized_roots"],
                 allowed_tools=request["allowed_tools"],
@@ -247,14 +254,23 @@ class ClaudeAgentAdapter:
                 hooks={"PreToolUse": [HookMatcher(matcher="Read|Glob|Grep|Write|Edit", hooks=[guard_path])]},
             )
             structured: dict[str, Any] | None = None
-            with anyio.fail_after(request["timeout_seconds"]):
-                async for message in query(prompt=prompt, options=options):
-                    if isinstance(message, ResultMessage):
-                        if getattr(message, "is_error", False):
-                            raise AdapterExecutionError("FAILED", f"Claude returned an error result: {getattr(message, 'subtype', 'unknown')}")
-                        candidate = getattr(message, "structured_output", None)
-                        if isinstance(candidate, dict):
-                            structured = candidate
+            error_summary: str | None = None
+            try:
+                with anyio.fail_after(request["timeout_seconds"]):
+                    async for message in query(prompt=prompt, options=options):
+                        if isinstance(message, ResultMessage):
+                            if getattr(message, "is_error", False):
+                                error_summary = getattr(message, "result", None) or getattr(message, "subtype", "unknown")
+                                continue
+                            candidate = getattr(message, "structured_output", None)
+                            if isinstance(candidate, dict):
+                                structured = candidate
+            except ClaudeSDKError as exc:
+                if error_summary:
+                    raise AdapterExecutionError("FAILED", f"Claude returned an error result: {error_summary}") from exc
+                raise AdapterExecutionError("FAILED", f"Claude SDK error: {type(exc).__name__}") from exc
+            if error_summary:
+                raise AdapterExecutionError("FAILED", f"Claude returned an error result: {error_summary}")
             if structured is None:
                 raise AdapterExecutionError("FAILED", "Claude returned no structured result")
             return structured

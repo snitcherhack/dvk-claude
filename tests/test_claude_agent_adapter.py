@@ -109,6 +109,20 @@ def test_subscription_only_blocks_external_provider_config_before_sdk_use(tmp_pa
     assert variable in result.summary
 
 
+def test_subscription_only_requires_authenticated_cli_path(tmp_path):
+    adapter = ClaudeAgentAdapter(authorized_roots=[tmp_path])
+    result = adapter.execute(task(tmp_path))
+    assert result.status == "BLOCKED"
+    assert "Claude CLI path" in result.summary
+
+
+def test_configured_cli_path_must_exist(tmp_path):
+    adapter = ClaudeAgentAdapter(authorized_roots=[tmp_path], cli_path=tmp_path / "missing-claude")
+    result = adapter.execute(task(tmp_path))
+    assert result.status == "BLOCKED"
+    assert "CLI path is not available" in result.summary
+
+
 def test_path_guard_accepts_only_authorized_roots(tmp_path):
     root = tmp_path / "root"
     root.mkdir()

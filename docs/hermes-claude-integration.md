@@ -61,6 +61,11 @@ o de los selectores `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` o
 `CLAUDE_CODE_USE_FOUNDRY` bloquea la ejecución para evitar desviar el consumo a
 API o proveedores cloud. No se bloquean credenciales OAuth de la suscripción.
 
+En modo de suscripción, el adapter requiere además un `cli_path` explícito hacia
+un Claude Code ya autenticado. El SDK incluye su propio CLI, pero no se asume
+que comparta la sesión OAuth del CLI interactivo del usuario. La configuración
+del worker expone ese binario mediante `cli_path_env`.
+
 El adapter exige `claude-agent-sdk >= 0.2.140`; la versión objetivo para la
 primera validación real será `0.2.156`, publicada el 18-09-2026. El mínimo se
 fija porque necesitamos hooks `PreToolUse`, `dontAsk`, `setting_sources=[]` y

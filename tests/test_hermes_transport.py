@@ -118,13 +118,16 @@ def test_native_worker_emits_native_engine(api):
 
 def test_worker_config_supports_multiple_execution_engines(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_TEST_ROOTS", str(tmp_path))
+    cli = tmp_path / "claude"
+    cli.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_TEST_CLAUDE_CLI", str(cli))
     config = {
         "controller_url": "http://127.0.0.1:1", "token": "test-main",
         "state_file": str(tmp_path / "worker.json"), "worker": MAIN,
         "default_execution_engine": "codex",
         "adapters": {
             "codex": {"kind": "mock"},
-            "claude": {"kind": "claude-agent", "authorized_roots_env": "HERMES_TEST_ROOTS"},
+            "claude": {"kind": "claude-agent", "authorized_roots_env": "HERMES_TEST_ROOTS", "cli_path_env": "HERMES_TEST_CLAUDE_CLI"},
         },
     }
     worker = WorkerDaemon(config)
@@ -132,6 +135,7 @@ def test_worker_config_supports_multiple_execution_engines(tmp_path, monkeypatch
     assert worker.adapter.default_engine == "codex"
     assert set(worker.adapter.adapters) == {"codex", "claude"}
     assert isinstance(worker.adapter.adapters["claude"], ClaudeAgentAdapter)
+    assert worker.adapter.adapters["claude"].cli_path == cli.resolve()
     claude_default = WorkerDaemon({**config, "default_execution_engine": "claude"})
     assert claude_default.adapter.default_engine == "claude"
 

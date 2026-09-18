@@ -85,9 +85,12 @@ class WorkerDaemon:
             roots = [item for item in os.environ[config["authorized_roots_env"]].split(os.pathsep) if item]
             profiles = set(config.get("execution_profiles", ["claude_smoke", "hermes"]))
             types = set(config.get("task_types", ["claude_smoke", "development"]))
+            cli_path_env = config.get("cli_path_env")
+            cli_path = os.environ.get(cli_path_env) if cli_path_env else None
             return ClaudeAgentAdapter(
                 authorized_roots=roots, execution_profiles=profiles, task_types=types,
                 max_turns=config.get("max_turns", 6), subscription_only=config.get("subscription_only", True),
+                cli_path=cli_path,
             )
         raise ValueError("unknown worker adapter")
 
