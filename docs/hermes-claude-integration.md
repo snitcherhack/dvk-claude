@@ -92,12 +92,13 @@ API o proveedores cloud. No se bloquean credenciales OAuth de la suscripción.
 En modo de suscripción, el adapter requiere además un `cli_path` explícito hacia
 un Claude Code ya autenticado. El SDK incluye su propio CLI, pero no se asume
 que comparta la sesión OAuth del CLI interactivo del usuario. La configuración
-del worker expone ese binario mediante `cli_path_env`.
+del worker expone ese binario mediante `cli_path_env`. En `main-linux` se usa el
+binario nativo WSL `/home/deiv/.local/bin/claude`, autenticado mediante
+`claude.ai`; ya no se depende del ejecutable de Windows para el daemon.
 
-El adapter exige `claude-agent-sdk >= 0.2.140`; la versión objetivo para la
-primera validación real será `0.2.156`, publicada el 18-09-2026. El mínimo se
-fija porque necesitamos hooks `PreToolUse`, `dontAsk`, `setting_sources=[]` y
-structured output en el flujo headless.
+El adapter exige `claude-agent-sdk >= 0.2.140`; la validación real se completó
+con `0.2.156`. El mínimo se fija porque necesitamos hooks `PreToolUse`,
+`dontAsk`, `setting_sources=[]` y structured output en el flujo headless.
 
 ## Contrato de resultados
 
@@ -131,7 +132,7 @@ Claude <-> Codex para sesiones humanas y para futuras extensiones controladas.
 3. `ClaudeAgentAdapter` con roots, timeout, hooks y resultado estructurado. HECHO.
 4. Claude read-only y `Write`/`Edit` sobre repositorio desechable. HECHO.
 5. `HybridAdapter`: Claude implementa y Codex revisa en read-only. HECHO; E2E distribuido DONE.
-6. Claude Code nativo en WSL. INSTALADO; autenticación OAuth pendiente.
-7. `codex-plugin-cc` nativo en WSL. INSTALADO; E2E del plugin pendiente de OAuth.
-8. Consolidar la feature branch y desplegar la misma versión en Controller y worker.
+6. Claude Code nativo en WSL. HECHO; OAuth `claude.ai` validado y usado por el worker.
+7. `codex-plugin-cc` nativo en WSL. HECHO; setup y review backend E2E completados.
+8. Consolidar la feature branch y desplegar la misma versión en Controller y worker. HECHO en `main`.
 9. Añadir política automática de selección de motor solo después de estabilizar los tres modos.
