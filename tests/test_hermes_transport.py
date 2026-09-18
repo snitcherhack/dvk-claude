@@ -6,7 +6,7 @@ import time
 import pytest
 
 import hermes_controller.controller as controller_module
-from hermes_controller.adapters import MockAdapter
+from hermes_controller.adapters import EngineRoutingAdapter, MockAdapter
 from hermes_controller.api import serve
 from hermes_controller.clock import FakeClock
 from hermes_controller.controller import Controller, StaleResultError
@@ -90,6 +90,19 @@ def test_j_duplicate_result_and_k_old_lease_rejected(api):
     d.client.ingest(item); d.client.ingest(item)
     assert controller.status(claim["job_id"])["state"] == "DONE"
     with pytest.raises(TransportError): d.client.ingest({**item, "lease_id": "old"})
+
+
+def test_worker_config_supports_multiple_execution_engines(tmp_path):
+    config = {
+        "controller_url": "http://127.0.0.1:1", "token": "test-main",
+        "state_file": str(tmp_path / "worker.json"), "worker": MAIN,
+        "default_execution_engine": "codex",
+        "adapters": {"codex": {"kind": "mock"}, "claude": {"kind": "mock"}},
+    }
+    worker = WorkerDaemon(config)
+    assert isinstance(worker.adapter, EngineRoutingAdapter)
+    assert worker.adapter.default_engine == "codex"
+    assert set(worker.adapter.adapters) == {"codex", "claude"}
 
 
 def test_l_two_daemons_one_claim_and_m_non_idempotent_not_redistributed(api, monkeypatch):

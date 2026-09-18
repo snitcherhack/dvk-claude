@@ -16,6 +16,7 @@ from .clock import MonotonicClock
 LEASE_DURATION_MS = 180_000
 WORKER_OFFLINE_MS = 90_000
 CODEX_STATUSES = {"DONE", "WAIT_USER", "BLOCKED", "FAILED"}
+ENGINE_CAPABILITIES = {"codex": {"codex"}, "claude": {"claude"}, "hybrid": {"codex", "claude"}}
 
 
 class ControllerError(RuntimeError):
@@ -265,6 +266,13 @@ class Controller:
         brain = task["brain"]
         if not {"repository", "ref", "commit", "task_file"}.issubset(brain):
             raise ControllerError("task requires immutable brain reference")
+        engine = task.get("execution_engine")
+        if engine is not None:
+            if engine not in ENGINE_CAPABILITIES:
+                raise ControllerError("invalid execution_engine")
+            capabilities = task.get("required_capabilities")
+            if not isinstance(capabilities, list) or not ENGINE_CAPABILITIES[engine].issubset(capabilities):
+                raise ControllerError("execution_engine capabilities are missing")
 
     @staticmethod
     def _validate_envelope(envelope: dict[str, Any]) -> None:

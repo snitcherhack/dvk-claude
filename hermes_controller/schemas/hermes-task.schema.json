@@ -9,6 +9,7 @@
     "task_type": {"type": "string"}, "platform": {"enum": ["linux", "windows"]},
     "required_capabilities": {"type": "array", "items": {"type": "string"}},
     "execution_profile": {"type": "string"},
+    "execution_engine": {"enum": ["codex", "claude", "hybrid"]},
     "human_gates": {"type": "array", "items": {"enum": ["WINDOWS_FINAL_RENDER_REQUIRED", "YOUTUBE_PUBLICATION_APPROVAL", "LICENSE_REVIEW_REQUIRED"]}},
     "idempotency_policy": {"enum": ["safe_retry", "manual_reconcile"]},
     "depends_on": {"type": "string"}, "idempotency_key": {"type": "string"}

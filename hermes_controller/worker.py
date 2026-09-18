@@ -10,7 +10,7 @@ from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
-from .adapters import CxhRunAdapter, ExecutionAdapter, MockAdapter
+from .adapters import CxhRunAdapter, EngineRoutingAdapter, ExecutionAdapter, MockAdapter
 
 
 class TransportError(RuntimeError): pass
@@ -39,7 +39,7 @@ class WorkerDaemon:
         self.config = config
         self.worker = config["worker"]
         self.client = HTTPControllerClient(config["controller_url"], self.worker["worker_id"], config["token"])
-        self.adapter = adapter or self._adapter_from_config(config.get("adapter", {"kind": "mock"}))
+        self.adapter = adapter or self._adapter_from_worker_config(config)
         self.heartbeat_interval_s = config.get("heartbeat_interval_ms", 30_000) / 1000
         self.backoff_s, self.max_backoff_s = config.get("retry_backoff_ms", 1_000) / 1000, config.get("max_backoff_ms", 30_000) / 1000
         self.state_path = Path(config.get("state_file", "worker-state.json"))
@@ -55,6 +55,16 @@ class WorkerDaemon:
             import os
             config["token"] = os.environ[token_env]
         return cls(config, adapter)
+
+    @classmethod
+    def _adapter_from_worker_config(cls, config: dict[str, Any]) -> ExecutionAdapter:
+        engines = config.get("adapters")
+        if engines is None:
+            return cls._adapter_from_config(config.get("adapter", {"kind": "mock"}))
+        if not isinstance(engines, dict) or not engines:
+            raise ValueError("adapters must be a non-empty object")
+        adapters = {name: cls._adapter_from_config(spec) for name, spec in engines.items()}
+        return EngineRoutingAdapter(adapters, default_engine=config.get("default_execution_engine", "codex"))
 
     @staticmethod
     def _adapter_from_config(config: dict[str, Any]) -> ExecutionAdapter:

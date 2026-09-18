@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from hermes_controller.clock import FakeClock
-from hermes_controller.controller import Controller, StaleResultError
+from hermes_controller.controller import Controller, ControllerError, StaleResultError
 
 
 MAIN = {"worker_id": "main-linux", "platform": "linux", "environment": "WSL/Kali", "capabilities": ["codex", "git", "python", "tests", "image_qa", "network"], "max_concurrent_jobs": 1}
@@ -128,6 +128,18 @@ def test_g_simultaneous_claims_are_atomic(core):
     [thread.join() for thread in threads]
     claims = [outcome for outcome in outcomes if outcome]
     assert len(claims) == 1 and claims[0]["job_id"] == job
+
+
+def test_execution_engine_requires_matching_capabilities(core):
+    controller, _, _ = core
+    with pytest.raises(ControllerError):
+        controller.enqueue({**task(capabilities=["codex"]), "execution_engine": "claude"})
+    with pytest.raises(ControllerError):
+        controller.enqueue({**task(capabilities=["claude"]), "execution_engine": "hybrid"})
+    claude_job = controller.enqueue({**task(capabilities=["claude"]), "execution_engine": "claude"})
+    hybrid_job = controller.enqueue({**task(capabilities=["codex", "claude"]), "execution_engine": "hybrid"})
+    assert controller.status(claude_job)["state"] == "QUEUED"
+    assert controller.status(hybrid_job)["state"] == "QUEUED"
 
 
 def test_h_youtube_gate_never_causes_publication(core):

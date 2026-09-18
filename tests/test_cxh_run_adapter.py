@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 import hermes_controller.adapters as adapters
-from hermes_controller.adapters import CxhRunAdapter
+from hermes_controller.adapters import AdapterResult, CxhRunAdapter, EngineRoutingAdapter
 
 
 def task(root: Path, **overrides):
@@ -47,6 +47,18 @@ def test_hermes_smoke_passes_runner_smoke_flag(tmp_path, monkeypatch):
     monkeypatch.setattr(adapters.subprocess, "Popen", lambda argv, **kw: (seen.append(argv) or Process(argv, **kw)))
     result = adapter(tmp_path).execute(spec)
     assert result.status == "DONE" and "--smoke-test" in seen[0]
+
+
+def test_engine_router_selects_explicit_engine_and_preserves_default():
+    class TaggedAdapter:
+        def __init__(self, name): self.name = name
+        def execute(self, _task): return AdapterResult(summary=self.name)
+
+    router = EngineRoutingAdapter({"codex": TaggedAdapter("codex"), "claude": TaggedAdapter("claude")})
+    assert router.execute({}).summary == "codex"
+    assert router.execute({"execution_engine": "claude"}).summary == "claude"
+    blocked = router.execute({"execution_engine": "hybrid"})
+    assert blocked.status == "BLOCKED" and "not configured" in blocked.summary
 
 
 def test_b_c_k_reject_invalid_root_profile_and_task_type(tmp_path):

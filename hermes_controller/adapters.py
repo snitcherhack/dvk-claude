@@ -44,6 +44,27 @@ class MockAdapter:
         return AdapterResult(status=status, summary=options.get("summary", "mock execution completed"), gate=options.get("gate"))
 
 
+class EngineRoutingAdapter:
+    """Route a validated task to a configured execution engine."""
+
+    def __init__(self, adapters: dict[str, ExecutionAdapter], *, default_engine: str = "codex") -> None:
+        if not adapters:
+            raise ValueError("at least one execution engine is required")
+        if default_engine not in adapters:
+            raise ValueError("default execution engine is not configured")
+        self.adapters = dict(adapters)
+        self.default_engine = default_engine
+
+    def execute(self, task: dict[str, Any]) -> AdapterResult:
+        engine = task.get("execution_engine", self.default_engine)
+        if not isinstance(engine, str) or not engine:
+            return AdapterResult(status="BLOCKED", summary="invalid execution_engine")
+        adapter = self.adapters.get(engine)
+        if adapter is None:
+            return AdapterResult(status="BLOCKED", summary=f"execution engine is not configured: {engine}")
+        return adapter.execute(task)
+
+
 class CxhRunAdapter:
     """Controlled bridge to the existing cxh-run runner (never a shell bridge)."""
 
