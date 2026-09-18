@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 import hermes_controller.adapters as adapters
-from hermes_controller.adapters import AdapterResult, CxhRunAdapter, EngineRoutingAdapter
+from hermes_controller.adapters import AdapterResult, CodexRunAdapter, CxhRunAdapter, EngineRoutingAdapter
 
 
 def task(root: Path, **overrides):
@@ -27,6 +27,11 @@ class Process:
 def adapter(root):
     runner = root / "cxh-run"; runner.write_text("runner")
     return CxhRunAdapter(runner_path=runner, authorized_roots=[root])
+
+
+def codex_adapter(root):
+    runner = root / "hermes-codex-run"; runner.write_text("runner")
+    return CodexRunAdapter(runner_path=runner, authorized_roots=[root])
 
 
 def write_result(spec):
@@ -120,3 +125,79 @@ def test_runner_dry_run_is_reachable_and_has_no_state_side_effects(tmp_path):
     assert f"cwd: {work}" in result.stdout
     assert "command: codex exec" in result.stdout
     assert not state_home.exists()
+
+
+def test_codex_run_adapter_passes_task_scoped_allowed_paths(tmp_path, monkeypatch):
+    spec = task(tmp_path)
+    write_result(spec)
+    seen = []
+    monkeypatch.setattr(adapters.subprocess, "Popen", lambda argv, **kw: (seen.append(argv) or Process(argv, **kw)))
+    result = codex_adapter(tmp_path).execute(spec)
+    assert result.status == "DONE"
+    argv = seen[0]
+    allowed = [argv[index + 1] for index, value in enumerate(argv) if value == "--allowed-path"]
+    assert allowed == [str(Path(spec["working_directory"]).resolve()), str((tmp_path / "brain").resolve())]
+
+
+def test_project_agnostic_runner_help():
+    runner = Path(__file__).parents[1] / "hermes-codex-run.sh"
+    result = subprocess.run([runner, "--help"], text=True, capture_output=True, check=False)
+    assert result.returncode == 0
+    assert "Uso: hermes-codex-run.sh" in result.stdout
+    assert "--allowed-path" in result.stdout
+
+
+def test_project_agnostic_runner_dry_run_has_no_video_dependency(tmp_path):
+    runner = Path(__file__).parents[1] / "hermes-codex-run.sh"
+    work = tmp_path / "repo"
+    task_dir = tmp_path / "tasks"
+    out = tmp_path / "runtime"
+    work.mkdir()
+    (work / ".git").mkdir()
+    task_dir.mkdir()
+    task_file = task_dir / "task.md"
+    task_file.write_text("generic task")
+    state_home = tmp_path / "state-home"
+    environment = {**os.environ, "XDG_STATE_HOME": str(state_home)}
+    result = subprocess.run(
+        [
+            runner, "--dry-run",
+            "--working-directory", str(work),
+            "--task-file", str(task_file),
+            "--run-output-dir", str(out),
+            "--allowed-path", str(work),
+            "--allowed-path", str(task_dir),
+            "--allowed-path", str(out),
+        ],
+        text=True, capture_output=True, env=environment, check=False,
+    )
+    assert result.returncode == 0
+    assert f"task: {task_file}" in result.stdout
+    assert "Winner Timeline" not in result.stdout
+    assert "youtube" not in result.stdout.lower()
+    assert not state_home.exists()
+
+
+def test_project_agnostic_runner_rejects_path_outside_task_scope(tmp_path):
+    runner = Path(__file__).parents[1] / "hermes-codex-run.sh"
+    work = tmp_path / "repo"
+    task_dir = tmp_path / "tasks"
+    out = tmp_path / "runtime"
+    work.mkdir()
+    (work / ".git").mkdir()
+    task_dir.mkdir()
+    task_file = task_dir / "task.md"
+    task_file.write_text("generic task")
+    result = subprocess.run(
+        [
+            runner, "--dry-run",
+            "--working-directory", str(work),
+            "--task-file", str(task_file),
+            "--run-output-dir", str(out),
+            "--allowed-path", str(work),
+            "--allowed-path", str(out),
+        ],
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 2
+    assert "ruta fuera de allowed paths" in result.stderr

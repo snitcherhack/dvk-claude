@@ -10,7 +10,7 @@ from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
-from .adapters import ClaudeAgentAdapter, CxhRunAdapter, EngineRoutingAdapter, ExecutionAdapter, MockAdapter
+from .adapters import ClaudeAgentAdapter, CodexRunAdapter, CxhRunAdapter, EngineRoutingAdapter, ExecutionAdapter, MockAdapter
 
 
 class TransportError(RuntimeError): pass
@@ -75,12 +75,13 @@ class WorkerDaemon:
         kind = config.get("kind", "mock")
         if kind == "mock": return MockAdapter()
         import os
-        if kind == "cxh-run":
+        if kind in {"cxh-run", "codex-run"}:
             runner = os.environ[config["runner_path_env"]]
             roots = [item for item in os.environ[config["authorized_roots_env"]].split(os.pathsep) if item]
             profiles = set(config.get("execution_profiles", ["hermes"]))
             types = set(config.get("task_types", ["development", "hermes_smoke"]))
-            return CxhRunAdapter(runner_path=runner, authorized_roots=roots, execution_profiles=profiles, task_types=types)
+            adapter_type = CodexRunAdapter if kind == "codex-run" else CxhRunAdapter
+            return adapter_type(runner_path=runner, authorized_roots=roots, execution_profiles=profiles, task_types=types)
         if kind == "claude-agent":
             roots = [item for item in os.environ[config["authorized_roots_env"]].split(os.pathsep) if item]
             profiles = set(config.get("execution_profiles", ["claude_smoke", "hermes"]))

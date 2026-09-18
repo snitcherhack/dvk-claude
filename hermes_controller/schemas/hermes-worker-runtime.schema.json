@@ -7,7 +7,7 @@
       "type": "object",
       "required": ["kind"],
       "properties": {
-        "kind": {"enum": ["mock", "cxh-run", "claude-agent"]},
+        "kind": {"enum": ["mock", "cxh-run", "codex-run", "claude-agent"]},
         "runner_path_env": {"type": "string"},
         "authorized_roots_env": {"type": "string"},
         "cli_path_env": {"type": "string"},

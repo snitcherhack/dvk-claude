@@ -38,9 +38,33 @@ Ejemplo conceptual:
 
     "default_execution_engine": "codex",
     "adapters": {
-      "codex": {"kind": "cxh-run", "...": "..."},
+      "codex": {"kind": "codex-run", "...": "..."},
       "claude": {"kind": "claude-agent", "...": "..."}
     }
+
+
+## Codex project-agnostic
+
+El runner genérico `hermes-codex-run.sh` elimina la dependencia operativa de
+`brain/proyectos/youtube/TAREA_ACTIVA.md`. Cada job proporciona explícitamente:
+
+- `working_directory`
+- `brain.task_file`
+- `run_output_dir`
+- `allowed_paths`
+- `execution_profile`
+- `timeout_seconds`
+
+El adapter `codex-run` valida primero todos esos paths contra los roots máximos
+del worker y luego transmite los `allowed_paths` al runner. El runner vuelve a
+validar que el cwd, el task file y el output estén dentro de ese scope y solo
+expone esos directorios a `codex exec --add-dir`.
+
+`cxh-run.sh` se conserva como compatibilidad con el flujo histórico de Winner
+Timeline, pero `main-linux` debe usar `hermes-codex-run.sh` para tareas nuevas.
+El smoke genérico crea su repositorio desechable dentro del propio
+`run_output_dir`; no depende de `WINNER_TIMELINE_QA_DIR` ni de un proyecto
+concreto.
 
 El tipo `claude-agent` ya está implementado de forma fail-closed y con carga
 perezosa del SDK. Puede construirse aunque el SDK aún no esté instalado; una

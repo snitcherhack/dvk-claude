@@ -376,18 +376,20 @@ class CxhRunAdapter:
         cwd = self._authorized(task.get("working_directory"), "working_directory")
         task_file = self._authorized(task.get("brain", {}).get("task_file"), "brain.task_file")
         output = self._authorized(task.get("run_output_dir"), "run_output_dir")
-        for value in task.get("allowed_paths", []): self._authorized(value, "allowed_paths")
+        allowed_values = task.get("allowed_paths", [])
+        if not isinstance(allowed_values, list):
+            raise AdapterExecutionError("BLOCKED", "allowed_paths must be a list")
+        allowed_paths = [self._authorized(value, "allowed_paths") for value in allowed_values]
         if not self.runner_path.is_file(): raise AdapterExecutionError("BLOCKED", "cxh-run is not available")
         if not (cwd / ".git").exists(): raise AdapterExecutionError("BLOCKED", "working_directory is not a Git repository")
         timeout = task.get("timeout_seconds", 1800)
         if not isinstance(timeout, int) or not 1 <= timeout <= 7200: raise AdapterExecutionError("BLOCKED", "invalid timeout_seconds")
         output.mkdir(parents=True, exist_ok=True)
         log = output / "cxh-run.log"
-        argv = [str(self.runner_path)]
-        if task_type == "hermes_smoke":
-            argv.append("--smoke-test")
-        argv.extend(["--working-directory", str(cwd), "--task-file", str(task_file),
-                     "--run-output-dir", str(output), "--execution-profile", profile, "--timeout-seconds", str(timeout)])
+        argv = self._build_argv(
+            task_type=task_type, cwd=cwd, task_file=task_file, output=output,
+            profile=profile, timeout=timeout, allowed_paths=allowed_paths,
+        )
         try:
             with log.open("wb") as stream:
                 process = subprocess.Popen(argv, cwd=cwd, stdout=stream, stderr=subprocess.STDOUT, shell=False)
@@ -412,12 +414,35 @@ class CxhRunAdapter:
         return AdapterResult(status=result["status"], summary=result["summary"], gate=result["gate"],
                              completed=result["completed"], remaining=result["remaining"], evidence=evidence)
 
+    def _build_argv(self, *, task_type: str, cwd: Path, task_file: Path, output: Path,
+                    profile: str, timeout: int, allowed_paths: list[Path]) -> list[str]:
+        argv = [str(self.runner_path)]
+        if task_type == "hermes_smoke":
+            argv.append("--smoke-test")
+        argv.extend(["--working-directory", str(cwd), "--task-file", str(task_file),
+                     "--run-output-dir", str(output), "--execution-profile", profile, "--timeout-seconds", str(timeout)])
+        return argv
+
     def _authorized(self, value: Any, name: str) -> Path:
         if not isinstance(value, str) or not value: raise AdapterExecutionError("BLOCKED", f"{name} is required")
         path = Path(value).resolve()
         if not any(path == root or root in path.parents for root in self.roots):
             raise AdapterExecutionError("BLOCKED", f"{name} is outside authorized roots")
         return path
+
+
+class CodexRunAdapter(CxhRunAdapter):
+    """Project-agnostic Codex runner that receives task-scoped allowed paths."""
+
+    def _build_argv(self, *, task_type: str, cwd: Path, task_file: Path, output: Path,
+                    profile: str, timeout: int, allowed_paths: list[Path]) -> list[str]:
+        argv = super()._build_argv(
+            task_type=task_type, cwd=cwd, task_file=task_file, output=output,
+            profile=profile, timeout=timeout, allowed_paths=allowed_paths,
+        )
+        for path in allowed_paths:
+            argv.extend(["--allowed-path", str(path)])
+        return argv
 
 
 class AdapterExecutionError(RuntimeError):
