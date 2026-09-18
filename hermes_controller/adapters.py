@@ -75,8 +75,11 @@ class CxhRunAdapter:
         if not isinstance(timeout, int) or not 1 <= timeout <= 7200: raise AdapterExecutionError("BLOCKED", "invalid timeout_seconds")
         output.mkdir(parents=True, exist_ok=True)
         log = output / "cxh-run.log"
-        argv = [str(self.runner_path), "--working-directory", str(cwd), "--task-file", str(task_file),
-                "--run-output-dir", str(output), "--execution-profile", profile, "--timeout-seconds", str(timeout)]
+        argv = [str(self.runner_path)]
+        if task_type == "hermes_smoke":
+            argv.append("--smoke-test")
+        argv.extend(["--working-directory", str(cwd), "--task-file", str(task_file),
+                     "--run-output-dir", str(output), "--execution-profile", profile, "--timeout-seconds", str(timeout)])
         try:
             with log.open("wb") as stream:
                 process = subprocess.Popen(argv, cwd=cwd, stdout=stream, stderr=subprocess.STDOUT, shell=False)

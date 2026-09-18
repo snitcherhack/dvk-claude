@@ -39,6 +39,14 @@ def test_a_argv_has_no_shell_and_h_done_is_wrapped(tmp_path, monkeypatch):
     monkeypatch.setattr(adapters.subprocess, "Popen", lambda argv, **kw: (seen.append((argv, kw)) or Process(argv, **kw)))
     result = adapter(tmp_path).execute(spec)
     assert result.status == "DONE" and seen[0][1]["shell"] is False and "--working-directory" in seen[0][0]
+    assert "--smoke-test" not in seen[0][0]
+
+
+def test_hermes_smoke_passes_runner_smoke_flag(tmp_path, monkeypatch):
+    spec = task(tmp_path, task_type="hermes_smoke"); write_result(spec); seen = []
+    monkeypatch.setattr(adapters.subprocess, "Popen", lambda argv, **kw: (seen.append(argv) or Process(argv, **kw)))
+    result = adapter(tmp_path).execute(spec)
+    assert result.status == "DONE" and "--smoke-test" in seen[0]
 
 
 def test_b_c_k_reject_invalid_root_profile_and_task_type(tmp_path):
