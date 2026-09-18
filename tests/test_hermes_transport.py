@@ -7,7 +7,7 @@ import time
 import pytest
 
 import hermes_controller.controller as controller_module
-from hermes_controller.adapters import ClaudeAgentAdapter, EngineRoutingAdapter, MockAdapter
+from hermes_controller.adapters import ClaudeAgentAdapter, EngineRoutingAdapter, HybridAdapter, MockAdapter
 from hermes_controller.api import serve
 from hermes_controller.clock import FakeClock
 from hermes_controller.controller import Controller, StaleResultError
@@ -128,13 +128,15 @@ def test_worker_config_supports_multiple_execution_engines(tmp_path, monkeypatch
         "adapters": {
             "codex": {"kind": "mock"},
             "claude": {"kind": "claude-agent", "authorized_roots_env": "HERMES_TEST_ROOTS", "cli_path_env": "HERMES_TEST_CLAUDE_CLI"},
+            "hybrid": {"kind": "hybrid", "primary_engine": "claude", "review_engine": "codex", "max_review_rounds": 1},
         },
     }
     worker = WorkerDaemon(config)
     assert isinstance(worker.adapter, EngineRoutingAdapter)
     assert worker.adapter.default_engine == "codex"
-    assert set(worker.adapter.adapters) == {"codex", "claude"}
+    assert set(worker.adapter.adapters) == {"codex", "claude", "hybrid"}
     assert isinstance(worker.adapter.adapters["claude"], ClaudeAgentAdapter)
+    assert isinstance(worker.adapter.adapters["hybrid"], HybridAdapter)
     assert worker.adapter.adapters["claude"].cli_path == cli.resolve()
     claude_default = WorkerDaemon({**config, "default_execution_engine": "claude"})
     assert claude_default.adapter.default_engine == "claude"

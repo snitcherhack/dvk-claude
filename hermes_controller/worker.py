@@ -10,7 +10,7 @@ from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
-from .adapters import ClaudeAgentAdapter, CodexRunAdapter, CxhRunAdapter, EngineRoutingAdapter, ExecutionAdapter, MockAdapter
+from .adapters import ClaudeAgentAdapter, CodexRunAdapter, CxhRunAdapter, EngineRoutingAdapter, ExecutionAdapter, HybridAdapter, MockAdapter
 
 
 class TransportError(RuntimeError): pass
@@ -67,7 +67,20 @@ class WorkerDaemon:
         if unknown:
             raise ValueError(f"unknown execution engine adapters: {sorted(unknown)}")
         default_engine = config.get("default_execution_engine", "codex")
-        adapters = {name: cls._adapter_from_config(spec) for name, spec in engines.items()}
+        adapters: dict[str, ExecutionAdapter] = {}
+        for name, spec in engines.items():
+            if spec.get("kind") != "hybrid":
+                adapters[name] = cls._adapter_from_config(spec)
+        for name, spec in engines.items():
+            if spec.get("kind") == "hybrid":
+                primary_name = spec.get("primary_engine", "claude")
+                reviewer_name = spec.get("review_engine", "codex")
+                if primary_name not in adapters or reviewer_name not in adapters:
+                    raise ValueError("hybrid adapter references an unavailable engine")
+                adapters[name] = HybridAdapter(
+                    adapters[primary_name], adapters[reviewer_name],
+                    max_review_rounds=spec.get("max_review_rounds", 1),
+                )
         return EngineRoutingAdapter(adapters, default_engine=default_engine)
 
     @staticmethod

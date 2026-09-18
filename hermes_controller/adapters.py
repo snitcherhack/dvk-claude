@@ -85,6 +85,174 @@ class EngineRoutingAdapter:
         return adapter.execute(task)
 
 
+class HybridAdapter:
+    """Claude implementation followed by read-only Codex review and one or more fix rounds."""
+
+    def __init__(self, primary: ExecutionAdapter, reviewer: ExecutionAdapter, *, max_review_rounds: int = 1) -> None:
+        if not isinstance(max_review_rounds, int) or not 0 <= max_review_rounds <= 3:
+            raise ValueError("invalid max_review_rounds")
+        self.primary = primary
+        self.reviewer = reviewer
+        self.max_review_rounds = max_review_rounds
+
+    def execute(self, task: dict[str, Any]) -> AdapterResult:
+        try:
+            return self._execute(task)
+        except (OSError, ValueError, TypeError) as exc:
+            return AdapterResult(status="FAILED", summary=f"hybrid orchestration failed: {type(exc).__name__}")
+
+    def _execute(self, task: dict[str, Any]) -> AdapterResult:
+        output_raw = task.get("run_output_dir")
+        if not isinstance(output_raw, str) or not output_raw:
+            return AdapterResult(status="BLOCKED", summary="hybrid run_output_dir is required")
+        output = Path(output_raw).resolve()
+        output.mkdir(parents=True, exist_ok=True)
+
+        allowed = task.get("allowed_paths", [])
+        if not isinstance(allowed, list) or not all(isinstance(item, str) and item for item in allowed):
+            return AdapterResult(status="BLOCKED", summary="hybrid allowed_paths must be a list of paths")
+        scoped_paths = list(dict.fromkeys([*allowed, str(output)]))
+
+        stage_results: list[dict[str, Any]] = []
+        primary_task = self._stage_task(
+            task,
+            task_file=task.get("brain", {}).get("task_file"),
+            run_output=output / "primary",
+            allowed_paths=scoped_paths,
+            engine="claude",
+            profile="hermes",
+        )
+        primary = self.primary.execute(primary_task)
+        stage_results.append({"stage": "primary", **primary.result()})
+        if primary.status != "DONE":
+            return self._finalize(output, primary.status, f"hybrid primary ended {primary.status}: {primary.summary}", stage_results)
+
+        for review_index in range(self.max_review_rounds + 1):
+            review_task_file = output / f"review-{review_index}.md"
+            review_task_file.write_text(self._review_prompt(task, primary, review_index), encoding="utf-8")
+            review_task = self._stage_task(
+                task,
+                task_file=str(review_task_file),
+                run_output=output / f"review-{review_index}",
+                allowed_paths=scoped_paths,
+                engine="codex",
+                profile="review",
+            )
+            review = self.reviewer.execute(review_task)
+            stage_results.append({"stage": f"review-{review_index}", **review.result()})
+            if review.status == "DONE":
+                return self._finalize(
+                    output,
+                    "DONE",
+                    f"hybrid completed: Claude implementation passed Codex review ({review.summary})",
+                    stage_results,
+                )
+            if review.status in {"WAIT_USER", "FAILED"}:
+                return self._finalize(
+                    output,
+                    review.status,
+                    f"hybrid review ended {review.status}: {review.summary}",
+                    stage_results,
+                )
+            if review.status != "BLOCKED":
+                return self._finalize(output, "FAILED", f"unexpected hybrid review status: {review.status}", stage_results)
+            if review_index >= self.max_review_rounds:
+                return self._finalize(
+                    output,
+                    "BLOCKED",
+                    f"Codex review still has material findings after {self.max_review_rounds} fix round(s): {review.summary}",
+                    stage_results,
+                )
+
+            fix_task_file = output / f"fix-{review_index + 1}.md"
+            fix_task_file.write_text(self._fix_prompt(task, review, review_index + 1), encoding="utf-8")
+            fix_task = self._stage_task(
+                task,
+                task_file=str(fix_task_file),
+                run_output=output / f"fix-{review_index + 1}",
+                allowed_paths=scoped_paths,
+                engine="claude",
+                profile="hermes",
+            )
+            fix = self.primary.execute(fix_task)
+            stage_results.append({"stage": f"fix-{review_index + 1}", **fix.result()})
+            if fix.status != "DONE":
+                return self._finalize(
+                    output,
+                    fix.status,
+                    f"hybrid fix round ended {fix.status}: {fix.summary}",
+                    stage_results,
+                )
+
+        return self._finalize(output, "FAILED", "hybrid orchestration exhausted unexpectedly", stage_results)
+
+    @staticmethod
+    def _stage_task(task: dict[str, Any], *, task_file: Any, run_output: Path,
+                    allowed_paths: list[str], engine: str, profile: str) -> dict[str, Any]:
+        if not isinstance(task_file, str) or not task_file:
+            raise ValueError("task file is required")
+        brain = dict(task.get("brain", {}))
+        brain["task_file"] = task_file
+        staged = dict(task)
+        staged.update({
+            "brain": brain,
+            "task_type": "development",
+            "execution_engine": engine,
+            "execution_profile": profile,
+            "run_output_dir": str(run_output),
+            "allowed_paths": allowed_paths,
+        })
+        return staged
+
+    @staticmethod
+    def _review_prompt(task: dict[str, Any], primary: AdapterResult, review_index: int) -> str:
+        original = task.get("brain", {}).get("task_file", "<unknown>")
+        return (
+            "# Hermes hybrid Codex review\n\n"
+            f"Original task snapshot: {original}\n"
+            f"Review pass: {review_index}\n"
+            f"Claude summary: {primary.summary}\n\n"
+            "Review the current working tree against the original task. Do not modify files. "
+            "Focus on correctness, regressions, security, tests, and task compliance. "
+            "Return DONE only when there are no material findings. Return BLOCKED when a material "
+            "finding requires another implementation pass, with precise evidence for each finding.\n"
+        )
+
+    @staticmethod
+    def _fix_prompt(task: dict[str, Any], review: AdapterResult, round_number: int) -> str:
+        original = task.get("brain", {}).get("task_file", "<unknown>")
+        evidence = "\n".join(f"- {item}" for item in (review.evidence or [])) or "- none"
+        return (
+            "# Hermes hybrid Claude fix round\n\n"
+            f"Original task snapshot: {original}\n"
+            f"Fix round: {round_number}\n"
+            f"Codex review summary: {review.summary}\n"
+            f"Codex evidence:\n{evidence}\n\n"
+            "Read the original task snapshot and address only the material review findings while "
+            "preserving the original task scope. Do not commit, push, publish, or access paths "
+            "outside the declared allowed paths. Return DONE when the findings are resolved.\n"
+        )
+
+    @staticmethod
+    def _finalize(output: Path, status: str, summary: str, stages: list[dict[str, Any]]) -> AdapterResult:
+        report = output / "hybrid-summary.json"
+        report.write_text(json.dumps({"status": status, "summary": summary, "stages": stages},
+                                     sort_keys=True, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        completed = [item for stage in stages for item in stage.get("completed", [])]
+        remaining = [item for stage in stages for item in stage.get("remaining", [])]
+        evidence = [str(report)]
+        for stage in stages:
+            evidence.extend(str(item) for item in stage.get("evidence", []))
+        return AdapterResult(
+            status=status,
+            summary=summary,
+            gate=next((stage.get("gate") for stage in reversed(stages) if stage.get("gate")), None),
+            completed=completed,
+            remaining=remaining,
+            evidence=evidence,
+        )
+
+
 class ClaudeAgentAdapter:
     """Fail-closed bridge to Claude Agent SDK with deterministic tool boundaries."""
 

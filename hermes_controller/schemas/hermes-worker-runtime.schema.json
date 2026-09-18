@@ -7,14 +7,17 @@
       "type": "object",
       "required": ["kind"],
       "properties": {
-        "kind": {"enum": ["mock", "cxh-run", "codex-run", "claude-agent"]},
+        "kind": {"enum": ["mock", "cxh-run", "codex-run", "claude-agent", "hybrid"]},
         "runner_path_env": {"type": "string"},
         "authorized_roots_env": {"type": "string"},
         "cli_path_env": {"type": "string"},
         "execution_profiles": {"type": "array", "items": {"type": "string"}},
         "task_types": {"type": "array", "items": {"type": "string"}},
         "max_turns": {"type": "integer", "minimum": 1, "maximum": 50},
-        "subscription_only": {"type": "boolean"}
+        "subscription_only": {"type": "boolean"},
+        "primary_engine": {"enum": ["claude", "codex"]},
+        "review_engine": {"enum": ["codex", "claude"]},
+        "max_review_rounds": {"type": "integer", "minimum": 0, "maximum": 3}
       },
       "additionalProperties": false
     }

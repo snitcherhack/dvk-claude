@@ -57,7 +57,7 @@ while (( $# )); do
     shift
 done
 
-if [[ "$EXECUTION_PROFILE" != "hermes" ]]; then
+if [[ "$EXECUTION_PROFILE" != "hermes" && "$EXECUTION_PROFILE" != "review" ]]; then
     echo "ERROR: execution profile no permitido: $EXECUTION_PROFILE" >&2
     exit 2
 fi
@@ -171,9 +171,13 @@ LOG_FILE="$RUN_OUTPUT_DIR/codex-exec.log"
 RESULT_FILE="$RUN_OUTPUT_DIR/result.json"
 SMOKE_WORKSPACE="$RUN_OUTPUT_DIR/smoke-workspace"
 
+SANDBOX_MODE="workspace-write"
 if (( SMOKE_TEST )); then
     mkdir -p "$SMOKE_WORKSPACE"
     BOOTSTRAP="Read the Hermes task snapshot at $TASK_FILE, but do not execute the requested project work. Perform only a safe runner smoke test: run git status --short --branch in the working directory, create a new disposable Git repository under $SMOKE_WORKSPACE, create a marker file there, run git add on that marker to verify .git/index writes, then delete only that disposable repository. Do not use network, do not modify the real repository, do not commit or push. Return status DONE only after all checks complete; gate null; remaining empty; evidence with verifiable paths/results."
+elif [[ "$EXECUTION_PROFILE" == "review" ]]; then
+    SANDBOX_MODE="read-only"
+    BOOTSTRAP="Read the Hermes review task at $TASK_FILE. Review the current working tree only; do not modify files, do not use network, do not commit or push. Return DONE when no material correctness, security, regression, or task-compliance issue remains. Return BLOCKED when you find one or more material issues that require another implementation pass, and describe each issue precisely in summary/evidence. Return FAILED only for an unrecoverable review failure. Return only the structured Hermes result."
 else
     BOOTSTRAP="Read the Hermes task snapshot at $TASK_FILE and execute only that task inside the declared allowed paths. Continue until exactly one terminal state applies: DONE when all task success conditions are complete; WAIT_USER at a declared human gate; BLOCKED for a real technical or permission blocker; FAILED for an unrecoverable failure. Do not invent gates. Do not commit, push, publish, or access paths outside the declared scope unless the task explicitly authorizes it. Return only the structured Hermes result."
 fi
@@ -181,7 +185,7 @@ fi
 ARGS=(
     exec
     --profile hermes
-    --sandbox workspace-write
+    --sandbox "$SANDBOX_MODE"
     --output-schema "$SCHEMA_FILE"
     --output-last-message "$RESULT_FILE"
 )
@@ -198,7 +202,7 @@ for root in "${ALLOWED_PATHS[@]}"; do
     fi
 done
 
-if (( SMOKE_TEST )); then
+if (( SMOKE_TEST )) || [[ "$EXECUTION_PROFILE" == "review" ]]; then
     ARGS+=(--config sandbox_workspace_write.network_access=false)
 fi
 

@@ -110,22 +110,28 @@ El Controller sigue aceptando temporalmente el campo histórico `codex_result`
 para no romper workers antiguos. Un sobre no puede contener ambos formatos a
 la vez.
 
-## Papel de codex-plugin-cc
+## Modo híbrido y papel de codex-plugin-cc
 
-`codex-plugin-cc` no forma parte del núcleo del Controller. Se reserva para el
-modo `hybrid`, donde Claude puede solicitar a Codex revisión, rescate o
-delegación. Las tareas `codex` siguen yendo directamente al adapter de Codex.
+El modo `hybrid` del worker no depende del plugin para la ejecución autónoma.
+Compone directamente `ClaudeAgentAdapter` como implementador y `CodexRunAdapter`
+como reviewer read-only. El reviewer devuelve `DONE` cuando no quedan hallazgos
+materiales y `BLOCKED` cuando hace falta otra pasada. Hermes permite hasta un
+número acotado de rondas Claude-fix -> Codex-review y deja trazabilidad en
+`hybrid-summary.json`.
+
+`codex-plugin-cc` se mantiene como integración opcional de Claude Code para
+revisión, rescue y transfer interactivos. Esto evita que el daemon dependa de
+prompts slash o decisiones interactivas del plugin, pero conserva la colaboración
+Claude <-> Codex para sesiones humanas y para futuras extensiones controladas.
 
 ## Secuencia de implementación
 
 1. Routing multi-engine y validación de capabilities. HECHO.
-2. Mantener Codex como motor por defecto. HECHO.
-3. Implementar `ClaudeAgentAdapter` con roots, timeout, hooks y resultado
-   estructurado. HECHO en código; pendiente validación con SDK real.
-4. Instalar/verificar Claude Code y Claude Agent SDK en `main-linux`.
-5. Ejecutar smoke E2E de Claude sin modificar repositorios reales.
-6. Validar la escritura controlada `Write`/`Edit` en un repositorio desechable
-   antes de habilitar tareas Claude de desarrollo reales.
-7. Evaluar `codex-plugin-cc` para `hybrid`.
-8. Añadir política de selección de motor al Controller solo después de validar
-   los tres modos de forma independiente.
+2. Codex project-agnostic con `codex-run` y smoke distribuido. HECHO.
+3. `ClaudeAgentAdapter` con roots, timeout, hooks y resultado estructurado. HECHO.
+4. Claude read-only y `Write`/`Edit` sobre repositorio desechable. HECHO.
+5. `HybridAdapter`: Claude implementa y Codex revisa en read-only. HECHO; E2E distribuido DONE.
+6. Claude Code nativo en WSL. INSTALADO; autenticación OAuth pendiente.
+7. `codex-plugin-cc` nativo en WSL. INSTALADO; E2E del plugin pendiente de OAuth.
+8. Consolidar la feature branch y desplegar la misma versión en Controller y worker.
+9. Añadir política automática de selección de motor solo después de estabilizar los tres modos.
