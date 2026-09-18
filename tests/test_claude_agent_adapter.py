@@ -146,7 +146,9 @@ def test_path_guard_accepts_only_authorized_roots(tmp_path, monkeypatch):
     allowed_unc = r"\\wsl.localhost\Ubuntu-24.04\home\deiv\Proyectos\dvk-claude\.smoke-results\claude-write-workspace\marker.txt"
     outside_unc = r"\\wsl.localhost\Ubuntu-24.04\home\deiv\Proyectos\dvk-claude\.smoke-results\marker.txt"
     other_distro = r"\\wsl.localhost\OtherDistro\home\deiv\Proyectos\dvk-claude\.smoke-results\claude-write-workspace\marker.txt"
+    posix_as_backslashes = r"\home\deiv\Proyectos\dvk-claude\.smoke-results\claude-write-workspace\marker.txt"
     assert adapter._tool_input_authorized("Write", {"file_path": allowed_unc}, wsl_root, [wsl_root])
+    assert adapter._tool_input_authorized("Write", {"file_path": posix_as_backslashes}, wsl_root, [wsl_root])
     assert not adapter._tool_input_authorized("Write", {"file_path": outside_unc}, wsl_root, [wsl_root])
     assert not adapter._tool_input_authorized("Write", {"file_path": other_distro}, wsl_root, [wsl_root])
     assert not adapter._tool_input_authorized("Write", {"file_path": r"C:\\temp\\marker.txt"}, wsl_root, [wsl_root])

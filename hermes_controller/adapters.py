@@ -313,10 +313,15 @@ class ClaudeAgentAdapter:
                 if not separator or not distro or not expected or distro.casefold() != expected.casefold():
                     return None
                 return Path("/" + tail.replace("\\", "/")).resolve()
-        if raw.startswith("\\\\") or "\\" in raw:
-            return None
         if len(raw) >= 2 and raw[1] == ":":
             return None
+        if raw.startswith("\\\\"):
+            return None
+        if "\\" in raw:
+            normalized = raw.replace("\\", "/")
+            if normalized.startswith("/"):
+                return Path(normalized).resolve()
+            raw = normalized
         path = Path(raw)
         if not path.is_absolute():
             path = cwd / path
