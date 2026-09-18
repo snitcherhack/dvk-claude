@@ -287,20 +287,40 @@ class ClaudeAgentAdapter:
         elif not isinstance(raw, str):
             return False
         else:
-            path = Path(raw)
-            if not path.is_absolute():
-                path = cwd / path
-            path = path.resolve()
+            path = self._normalize_tool_path(raw, cwd)
+            if path is None:
+                return False
         if tool_name == "Glob":
             pattern = tool_input.get("pattern", "")
             if not isinstance(pattern, str):
                 return False
-            pattern_path = Path(pattern)
-            if ".." in pattern_path.parts:
+            normalized_pattern = pattern.replace("\\", "/")
+            if ".." in normalized_pattern.split("/"):
                 return False
-            if pattern_path.is_absolute() and not self._path_authorized(pattern_path.resolve(), roots):
-                return False
+            if pattern.startswith("\\\\") or (len(pattern) >= 2 and pattern[1] == ":") or Path(pattern).is_absolute():
+                pattern_path = self._normalize_tool_path(pattern, cwd)
+                if pattern_path is None or not self._path_authorized(pattern_path, roots):
+                    return False
         return self._path_authorized(path, roots)
+
+    @staticmethod
+    def _normalize_tool_path(raw: str, cwd: Path) -> Path | None:
+        for prefix in ("\\\\wsl.localhost\\", "\\\\wsl$\\"):
+            if raw.casefold().startswith(prefix.casefold()):
+                rest = raw[len(prefix):]
+                distro, separator, tail = rest.partition("\\")
+                expected = os.environ.get("WSL_DISTRO_NAME")
+                if not separator or not distro or not expected or distro.casefold() != expected.casefold():
+                    return None
+                return Path("/" + tail.replace("\\", "/")).resolve()
+        if raw.startswith("\\\\") or "\\" in raw:
+            return None
+        if len(raw) >= 2 and raw[1] == ":":
+            return None
+        path = Path(raw)
+        if not path.is_absolute():
+            path = cwd / path
+        return path.resolve()
 
     def _path_authorized(self, path: Path, roots: list[Path] | None = None) -> bool:
         active_roots = roots if roots is not None else self.roots

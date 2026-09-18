@@ -123,7 +123,7 @@ def test_configured_cli_path_must_exist(tmp_path):
     assert "CLI path is not available" in result.summary
 
 
-def test_path_guard_accepts_only_authorized_roots(tmp_path):
+def test_path_guard_accepts_only_authorized_roots(tmp_path, monkeypatch):
     root = tmp_path / "root"
     root.mkdir()
     cwd = root / "repo"
@@ -140,3 +140,13 @@ def test_path_guard_accepts_only_authorized_roots(tmp_path):
     sibling = root / "sibling"
     sibling.mkdir()
     assert not adapter._tool_input_authorized("Read", {"file_path": str(sibling / "secret.txt")}, cwd, [cwd])
+
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu-24.04")
+    wsl_root = Path("/home/deiv/Proyectos/dvk-claude/.smoke-results/claude-write-workspace")
+    allowed_unc = r"\\wsl.localhost\Ubuntu-24.04\home\deiv\Proyectos\dvk-claude\.smoke-results\claude-write-workspace\marker.txt"
+    outside_unc = r"\\wsl.localhost\Ubuntu-24.04\home\deiv\Proyectos\dvk-claude\.smoke-results\marker.txt"
+    other_distro = r"\\wsl.localhost\OtherDistro\home\deiv\Proyectos\dvk-claude\.smoke-results\claude-write-workspace\marker.txt"
+    assert adapter._tool_input_authorized("Write", {"file_path": allowed_unc}, wsl_root, [wsl_root])
+    assert not adapter._tool_input_authorized("Write", {"file_path": outside_unc}, wsl_root, [wsl_root])
+    assert not adapter._tool_input_authorized("Write", {"file_path": other_distro}, wsl_root, [wsl_root])
+    assert not adapter._tool_input_authorized("Write", {"file_path": r"C:\\temp\\marker.txt"}, wsl_root, [wsl_root])

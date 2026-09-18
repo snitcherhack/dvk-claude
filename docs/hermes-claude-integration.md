@@ -54,7 +54,11 @@ Perfiles iniciales:
   deshabilitadas hasta disponer de una política específica para comandos.
 
 Todas las herramientas de ruta pasan por un hook `PreToolUse` que deniega
-accesos fuera de `authorized_roots`. La configuración del SDK usa
+accesos fuera de `authorized_roots`. Cuando Claude Code se ejecuta desde Windows
+contra un workspace WSL, sus herramientas pueden reportar rutas UNC del tipo
+`\\wsl.localhost\\<distro>\\...`; el adapter las normaliza a rutas POSIX solo
+si el nombre de distro coincide con `WSL_DISTRO_NAME`, y rechaza otras rutas
+Windows/UNC para evitar escapes de `allowed_paths`. La configuración del SDK usa
 `setting_sources=[]` y `skills=[]` para aislar el worker de ajustes locales no
 declarados. Con `subscription_only=true`, la presencia de `ANTHROPIC_API_KEY`
 o de los selectores `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` o
