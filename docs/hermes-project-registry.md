@@ -158,3 +158,14 @@ accessing or changing files.
 The project registry therefore does not grant arbitrary filesystem access: a
 project path must be inside both the worker maximum roots and the task's
 allowed-path scope.
+
+## Human-gate contract
+
+`WAIT_USER` is fail-closed. A worker may return it only with a gate explicitly
+declared in the task/project `human_gates` list. An undeclared or missing
+WAIT_USER gate is converted to `BLOCKED` by the worker and is also rejected by
+the Controller if a nonconforming worker bypasses that normalization.
+
+For `DONE`, `BLOCKED` and `FAILED`, the result gate must be null. The worker
+clears accidental model-generated gates from non-WAIT_USER results before
+ingestion; the Controller independently enforces the same invariant.

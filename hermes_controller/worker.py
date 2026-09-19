@@ -167,6 +167,37 @@ class WorkerDaemon:
         prepared["brain"] = prepared_brain
         return prepared
 
+    @staticmethod
+    def _normalize_gate_result(result: AdapterResult, task: dict[str, Any]) -> AdapterResult:
+        declared = task.get("human_gates", [])
+        declared_gates = set(declared) if isinstance(declared, list) else set()
+        if result.status == "WAIT_USER":
+            if not result.gate or result.gate not in declared_gates:
+                gate_name = result.gate or "<missing>"
+                evidence = list(result.evidence or [])
+                evidence.append(f"gate-policy: rejected undeclared WAIT_USER gate {gate_name}")
+                return AdapterResult(
+                    status="BLOCKED",
+                    summary=f"adapter requested undeclared human gate: {gate_name}",
+                    gate=None,
+                    completed=list(result.completed or []),
+                    remaining=list(result.remaining or []),
+                    evidence=evidence,
+                )
+            return result
+        if result.gate is not None:
+            evidence = list(result.evidence or [])
+            evidence.append(f"gate-policy: ignored gate on {result.status}: {result.gate}")
+            return AdapterResult(
+                status=result.status,
+                summary=result.summary,
+                gate=None,
+                completed=list(result.completed or []),
+                remaining=list(result.remaining or []),
+                evidence=evidence,
+            )
+        return result
+
     def once(self) -> bool:
         self.client.heartbeat_worker()
         claim = self.active_claim or self.client.claim()
@@ -193,7 +224,7 @@ class WorkerDaemon:
                 self.client.heartbeat_worker(); self.client.heartbeat_run(claim)
         if not result_box:
             raise RuntimeError("adapter did not return a result")
-        result = result_box[0]
+        result = self._normalize_gate_result(result_box[0], claim["task"])
         now = time.time_ns() // 1_000_000
         envelope = {**{key: claim[key] for key in ("job_id", "run_id", "attempt", "lease_id", "lease_token")}, "worker_id": self.worker["worker_id"], "started_at": now, "finished_at": now, "engine": self._execution_engine_for_task(claim["task"]), "engine_result": result.result(), "artifacts": [], "hashes": {}}
         self.pending_envelope = envelope; self._save_state(claim, envelope)

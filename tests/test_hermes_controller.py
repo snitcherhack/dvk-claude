@@ -195,3 +195,21 @@ def test_h_youtube_gate_never_causes_publication(core):
     controller.ingest_result(envelope(claim, "WAIT_USER", "YOUTUBE_PUBLICATION_APPROVAL"))
     assert controller.status(job)["state"] == "WAIT_USER"
     assert all(event["event_type"] != "PUBLICATION_TRIGGERED" for event in controller.events())
+
+def test_controller_rejects_gate_on_non_wait_user_result(core):
+    controller, _, _ = core
+    controller.enqueue(task())
+    claim = controller.claim("main-linux")
+    item = envelope(claim)
+    item["codex_result"]["gate"] = "invented-gate"
+    with pytest.raises(ControllerError, match="non-WAIT_USER"):
+        controller.ingest_result(item)
+
+
+def test_controller_rejects_undeclared_wait_user_gate(core):
+    controller, _, _ = core
+    controller.enqueue(task())
+    claim = controller.claim("main-linux")
+    item = envelope(claim, status="WAIT_USER", gate="invented-gate")
+    with pytest.raises(ControllerError, match="declared human gate"):
+        controller.ingest_result(item)

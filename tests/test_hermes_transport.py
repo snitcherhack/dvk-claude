@@ -218,3 +218,31 @@ def test_worker_blocks_inline_task_outside_materialization_root(api, monkeypatch
     assert d.once()
     assert controller.status(job)["state"] == "BLOCKED"
     assert not (root / "outside" / "run" / "hermes-task.md").exists()
+
+def test_worker_clears_gate_from_non_wait_user_result(api):
+    controller, url, root = api
+    d = daemon(url, root)
+    d.register()
+    job = controller.enqueue({**task(), "mock": {"status": "DONE", "gate": "invented-gate"}})
+    assert d.once()
+    assert controller.status(job)["state"] == "DONE"
+    row = controller.db.execute("SELECT result_json FROM runs WHERE job_id=?", (job,)).fetchone()
+    payload = json.loads(row["result_json"])
+    result = payload["engine_result"]
+    assert result["gate"] is None
+    assert any("ignored gate on DONE" in item for item in result["evidence"])
+
+
+def test_worker_blocks_undeclared_wait_user_gate(api):
+    controller, url, root = api
+    d = daemon(url, root)
+    d.register()
+    job = controller.enqueue({**task(), "mock": {"status": "WAIT_USER", "gate": "invented-gate"}})
+    assert d.once()
+    assert controller.status(job)["state"] == "BLOCKED"
+    row = controller.db.execute("SELECT result_json FROM runs WHERE job_id=?", (job,)).fetchone()
+    payload = json.loads(row["result_json"])
+    result = payload["engine_result"]
+    assert result["status"] == "BLOCKED"
+    assert result["gate"] is None
+    assert "undeclared human gate" in result["summary"]

@@ -243,10 +243,17 @@ class HybridAdapter:
         evidence = [str(report)]
         for stage in stages:
             evidence.extend(str(item) for item in stage.get("evidence", []))
+        gate = None
+        if status == "WAIT_USER":
+            gate = next((
+                stage.get("gate")
+                for stage in reversed(stages)
+                if stage.get("status") == "WAIT_USER" and stage.get("gate")
+            ), None)
         return AdapterResult(
             status=status,
             summary=summary,
-            gate=next((stage.get("gate") for stage in reversed(stages) if stage.get("gate")), None),
+            gate=gate,
             completed=completed,
             remaining=remaining,
             evidence=evidence,

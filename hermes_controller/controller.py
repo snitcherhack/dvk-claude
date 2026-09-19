@@ -370,6 +370,13 @@ class Controller:
             raise ControllerError("result engine does not match task")
         result = self._result_payload(envelope)
         outcome = result["status"]
+        gate = result.get("gate")
+        declared_gates = task.get("human_gates", [])
+        if outcome == "WAIT_USER":
+            if not isinstance(gate, str) or gate not in declared_gates:
+                raise ControllerError("WAIT_USER result requires a declared human gate")
+        elif gate is not None:
+            raise ControllerError("non-WAIT_USER result cannot carry a human gate")
         self.db.execute("UPDATE runs SET state=?, result_json=? WHERE run_id=?", (outcome, serialized, run["run_id"]))
         self.db.execute("UPDATE jobs SET state=?, active_run_id=NULL WHERE job_id=?", (outcome, run["job_id"]))
         self._event("run", run["run_id"], "RESULT_INGESTED", outcome=outcome, gate=result["gate"], engine=actual_engine)

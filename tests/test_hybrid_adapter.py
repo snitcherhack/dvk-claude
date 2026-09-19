@@ -41,8 +41,8 @@ def task(root: Path):
     }
 
 
-def done(summary):
-    return AdapterResult(status="DONE", summary=summary, completed=[summary], evidence=[f"evidence:{summary}"])
+def done(summary, gate=None):
+    return AdapterResult(status="DONE", summary=summary, gate=gate, completed=[summary], evidence=[f"evidence:{summary}"])
 
 
 def blocked(summary):
@@ -99,3 +99,12 @@ def test_hybrid_propagates_primary_terminal_state(tmp_path):
     assert result.status == "WAIT_USER"
     assert result.gate == "LICENSE_REVIEW_REQUIRED"
     assert reviewer.tasks == []
+
+def test_hybrid_does_not_propagate_gate_from_done_stage(tmp_path):
+    spec = task(tmp_path)
+    primary = SequenceAdapter([done("implemented", gate="invented-gate")])
+    reviewer = SequenceAdapter([done("clean review")])
+    result = HybridAdapter(primary, reviewer, max_review_rounds=1).execute(spec)
+
+    assert result.status == "DONE"
+    assert result.gate is None
