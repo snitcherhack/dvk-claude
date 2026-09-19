@@ -308,10 +308,11 @@ def test_large_client_payload_uses_gzip_transport(api):
     controller, url, root = api
     d = daemon(url, root)
     d.register()
+    padding = "".join(f"{index:04x}" for index in range(2048))
     response = d.client.request(
         "POST",
         "/v1/workers/heartbeat",
-        {"worker_id": "main-linux", "padding": "x" * 4096},
+        {"worker_id": "main-linux", "padding": padding},
     )
     assert response == {"received": True}
     assert controller.worker_status("main-linux")["state"] == "ONLINE"

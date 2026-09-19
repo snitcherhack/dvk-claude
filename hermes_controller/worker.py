@@ -34,7 +34,15 @@ class HTTPControllerClient:
         if data is not None and len(data) > 1024:
             data = gzip.compress(data)
             headers["Content-Encoding"] = "gzip"
-        req = Request(self.url + path, data=data, method=method, headers=headers)
+        request_data: Any = data
+        if data is not None and len(data) > 512:
+            # WSL userspace Tailscale proxies can stall when urllib writes a
+            # multi-packet request body in one send(). Preserve Content-Length
+            # but feed http.client small segments so the tailnet path remains
+            # reliable without changing the Hermes HTTP contract.
+            headers["Content-Length"] = str(len(data))
+            request_data = tuple(data[index:index + 512] for index in range(0, len(data), 512))
+        req = Request(self.url + path, data=request_data, method=method, headers=headers)
         try:
             with urlopen(req, timeout=self.timeout_s) as response: return json.loads(response.read())
         except HTTPError as exc:
