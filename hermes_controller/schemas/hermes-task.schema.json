@@ -26,6 +26,17 @@
     "required_capabilities": {"type": "array", "items": {"type": "string"}},
     "execution_profile": {"type": "string"},
     "execution_engine": {"enum": ["codex", "claude", "hybrid", "native"]},
+    "engine_selection": {
+      "type": "object",
+      "required": ["mode", "selected_engine"],
+      "properties": {
+        "mode": {"enum": ["auto", "explicit", "project-default"]},
+        "policy": {"type": "string"},
+        "rule": {"type": "string"},
+        "selected_engine": {"enum": ["codex", "claude", "hybrid", "native"]}
+      },
+      "additionalProperties": false
+    },
     "human_gates": {"type": "array", "items": {"enum": ["WINDOWS_FINAL_RENDER_REQUIRED", "YOUTUBE_PUBLICATION_APPROVAL", "LICENSE_REVIEW_REQUIRED"]}},
     "idempotency_policy": {"enum": ["safe_retry", "manual_reconcile"]},
     "depends_on": {"type": "string"},

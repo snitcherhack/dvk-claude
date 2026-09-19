@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .clock import MonotonicClock
+from .engine_policy import select_engine
 
 LEASE_DURATION_MS = 180_000
 WORKER_OFFLINE_MS = 90_000
@@ -192,9 +193,28 @@ class Controller:
             raise ControllerError("project task instruction exceeds 1 MiB")
 
         manifest = self.project(project_id)["manifest"]
-        selected_engine = engine or manifest["default_engine"]
-        if selected_engine not in manifest["allowed_engines"]:
-            raise ControllerError(f"engine is not allowed for project: {selected_engine}")
+        requested_engine = engine or manifest["default_engine"]
+        if requested_engine == "auto":
+            policy_name = manifest.get("engine_policy", "balanced-v1")
+            try:
+                decision = select_engine(instruction, manifest["allowed_engines"], policy=policy_name)
+            except ValueError as exc:
+                raise ControllerError(str(exc)) from exc
+            selected_engine = decision.engine
+            selection = {
+                "mode": "auto",
+                "policy": decision.policy,
+                "rule": decision.rule,
+                "selected_engine": decision.engine,
+            }
+        else:
+            selected_engine = requested_engine
+            if selected_engine not in manifest["allowed_engines"]:
+                raise ControllerError(f"engine is not allowed for project: {selected_engine}")
+            selection = {
+                "mode": "explicit" if engine is not None else "project-default",
+                "selected_engine": selected_engine,
+            }
 
         job_id = str(uuid.uuid4())
         runtime_directory = manifest["runtime_directory"].rstrip("/\\")
@@ -218,6 +238,7 @@ class Controller:
             "required_capabilities": sorted(capabilities),
             "execution_profile": manifest.get("execution_profile", "hermes"),
             "execution_engine": selected_engine,
+            "engine_selection": selection,
             "human_gates": list(manifest.get("human_gates", [])),
             "idempotency_policy": manifest.get("idempotency_policy", "safe_retry"),
             "working_directory": manifest["working_directory"],
@@ -253,7 +274,13 @@ class Controller:
             "INSERT INTO jobs VALUES (?, ?, 'QUEUED', 0, NULL, ?, ?, ?, ?)",
             (job_id, json.dumps(task, sort_keys=True), key, int(policy == "safe_retry"), task.get("depends_on"), self.clock.now()),
         )
-        self._event("job", job_id, "JOB_ENQUEUED", task_type=task["task_type"])
+        self._event(
+            "job", job_id, "JOB_ENQUEUED",
+            task_type=task["task_type"],
+            project=task["project"],
+            engine=self._task_engine(task),
+            engine_selection=task.get("engine_selection"),
+        )
         return job_id
 
     def claim(self, worker_id: str) -> dict[str, Any] | None:
@@ -352,7 +379,17 @@ class Controller:
         if job is None:
             raise ControllerError(f"unknown job: {job_id}")
         runs = self.db.execute("SELECT run_id, attempt, worker_id, state, lease_expires_at FROM runs WHERE job_id=? ORDER BY attempt", (job_id,)).fetchall()
-        return {"job_id": job_id, "state": job["state"], "attempt": job["attempt"], "active_run_id": job["active_run_id"], "runs": [dict(row) for row in runs]}
+        task = json.loads(job["task_json"])
+        return {
+            "job_id": job_id,
+            "project": task["project"],
+            "engine": self._task_engine(task),
+            "engine_selection": task.get("engine_selection"),
+            "state": job["state"],
+            "attempt": job["attempt"],
+            "active_run_id": job["active_run_id"],
+            "runs": [dict(row) for row in runs],
+        }
 
     def events(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.db.execute("SELECT * FROM events ORDER BY event_id")]
@@ -414,8 +451,14 @@ class Controller:
             or len(set(engines)) != len(engines)
         ):
             raise ControllerError("invalid allowed_engines")
-        if manifest["default_engine"] not in engines:
-            raise ControllerError("default_engine must be allowed")
+        default_engine = manifest["default_engine"]
+        if default_engine == "auto":
+            if manifest.get("engine_policy", "balanced-v1") != "balanced-v1":
+                raise ControllerError("unsupported engine_policy")
+        elif default_engine not in engines:
+            raise ControllerError("default_engine must be allowed or auto")
+        if manifest.get("engine_policy") is not None and manifest["engine_policy"] != "balanced-v1":
+            raise ControllerError("unsupported engine_policy")
         capabilities = manifest["capabilities"]
         if not isinstance(capabilities, list) or any(not isinstance(item, str) or not item for item in capabilities):
             raise ControllerError("invalid project capabilities")

@@ -11,7 +11,8 @@
     "claude",
     "hybrid"
   ],
-  "default_engine": "codex",
+  "default_engine": "auto",
+  "engine_policy": "balanced-v1",
   "capabilities": [
     "git",
     "python",

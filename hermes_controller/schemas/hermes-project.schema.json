@@ -21,7 +21,8 @@
       "uniqueItems": true,
       "items": {"enum": ["codex", "claude", "hybrid", "native"]}
     },
-    "default_engine": {"enum": ["codex", "claude", "hybrid", "native"]},
+    "default_engine": {"enum": ["auto", "codex", "claude", "hybrid", "native"]},
+    "engine_policy": {"enum": ["balanced-v1"]},
     "capabilities": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "task_type": {"type": "string", "minLength": 1},
     "execution_profile": {"type": "string", "minLength": 1},

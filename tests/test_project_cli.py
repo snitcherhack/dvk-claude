@@ -68,3 +68,20 @@ def test_project_cli_register_and_build_multiline_instruction(tmp_path):
     assert task["task_text"] == instruction
     assert task["execution_engine"] == "hybrid"
     assert {"codex", "claude", "git", "tests"}.issubset(task["required_capabilities"])
+
+    auto_output = tmp_path / "auto-task.json"
+    run(
+        "task",
+        "build",
+        "cli-project",
+        "--engine",
+        "auto",
+        "--instruction",
+        "Revisa este cambio crítico antes de producción.",
+        "--output",
+        str(auto_output),
+    )
+    auto_task = json.loads(auto_output.read_text(encoding="utf-8"))
+    assert auto_task["execution_engine"] == "hybrid"
+    assert auto_task["engine_selection"]["mode"] == "auto"
+    assert auto_task["engine_selection"]["rule"] == "hybrid_review_or_high_impact"

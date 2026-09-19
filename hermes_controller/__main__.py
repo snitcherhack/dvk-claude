@@ -26,7 +26,7 @@ def _add_instruction_arguments(parser: argparse.ArgumentParser) -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--instruction")
     group.add_argument("--instruction-file")
-    parser.add_argument("--engine", choices=("codex", "claude", "hybrid", "native"))
+    parser.add_argument("--engine", choices=("auto", "codex", "claude", "hybrid", "native"))
     parser.add_argument("--idempotency-key")
 
 
@@ -147,6 +147,7 @@ def main() -> None:
                     "job_id": job_id,
                     "project": args.project_id,
                     "engine": task_spec["execution_engine"],
+                    "engine_selection": task_spec.get("engine_selection"),
                 }, sort_keys=True))
             return
 

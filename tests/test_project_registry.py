@@ -115,3 +115,47 @@ def test_target_worker_prevents_other_matching_worker_from_claiming(tmp_path):
     assert controller.claim("other-linux") is None
     assert controller.claim("main-linux")["job_id"] == job
     controller.close()
+
+def test_project_task_builder_auto_policy_records_selection(tmp_path):
+    controller = Controller(tmp_path / "controller")
+    controller.register_project(manifest(tmp_path, default_engine="auto", engine_policy="balanced-v1"))
+
+    bug = controller.build_project_task("sample-project", "Corrige el fallo del test unitario.")
+    assert bug["execution_engine"] == "codex"
+    assert bug["engine_selection"] == {
+        "mode": "auto",
+        "policy": "balanced-v1",
+        "rule": "codex_implementation_or_bugfix",
+        "selected_engine": "codex",
+    }
+
+    architecture = controller.build_project_task("sample-project", "Analiza la arquitectura y diseña una estrategia.")
+    assert architecture["execution_engine"] == "claude"
+    assert architecture["engine_selection"]["rule"] == "claude_analysis_or_architecture"
+
+    review = controller.build_project_task("sample-project", "Revisa este cambio crítico antes de producción.")
+    assert review["execution_engine"] == "hybrid"
+    assert review["engine_selection"]["rule"] == "hybrid_review_or_high_impact"
+    controller.close()
+
+
+def test_explicit_engine_overrides_auto_policy(tmp_path):
+    controller = Controller(tmp_path / "controller")
+    controller.register_project(manifest(tmp_path, default_engine="auto", engine_policy="balanced-v1"))
+    task = controller.build_project_task(
+        "sample-project",
+        "Revisa este cambio crítico antes de producción.",
+        engine="codex",
+    )
+    assert task["execution_engine"] == "codex"
+    assert task["engine_selection"] == {"mode": "explicit", "selected_engine": "codex"}
+    controller.close()
+
+
+def test_project_manifest_rejects_unknown_engine_policy(tmp_path):
+    controller = Controller(tmp_path / "controller")
+    with pytest.raises(ControllerError, match="engine_policy"):
+        controller.register_project(
+            manifest(tmp_path, default_engine="auto", engine_policy="unknown-v9")
+        )
+    controller.close()
