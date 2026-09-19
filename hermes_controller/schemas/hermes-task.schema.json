@@ -37,7 +37,7 @@
       },
       "additionalProperties": false
     },
-    "human_gates": {"type": "array", "items": {"enum": ["WINDOWS_FINAL_RENDER_REQUIRED", "YOUTUBE_PUBLICATION_APPROVAL", "LICENSE_REVIEW_REQUIRED", "VISUAL_ASSET_HANDOFF_REQUIRED"]}},
+    "human_gates": {"type": "array", "items": {"enum": ["WINDOWS_FINAL_RENDER_REQUIRED", "YOUTUBE_PUBLICATION_APPROVAL", "LICENSE_REVIEW_REQUIRED", "VISUAL_ASSET_HANDOFF_REQUIRED", "PENTEST_ACTIVE_SCAN_APPROVAL_REQUIRED"]}},
     "idempotency_policy": {"enum": ["safe_retry", "manual_reconcile"]},
     "depends_on": {"type": "string"},
     "idempotency_key": {"type": "string"},
