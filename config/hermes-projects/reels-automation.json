@@ -24,7 +24,7 @@
   "task_type": "development",
   "execution_profile": "hermes",
   "human_gates": [
-    "VIBES_AI_MANUAL_GENERATION_REQUIRED"
+    "VISUAL_ASSET_HANDOFF_REQUIRED"
   ],
   "idempotency_policy": "safe_retry",
   "timeout_seconds": 1800,
