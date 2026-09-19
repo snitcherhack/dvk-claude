@@ -159,3 +159,35 @@ def test_project_manifest_rejects_unknown_engine_policy(tmp_path):
             manifest(tmp_path, default_engine="auto", engine_policy="unknown-v9")
         )
     controller.close()
+
+def test_project_task_builder_opt_in_workspace_scope(tmp_path):
+    controller = Controller(tmp_path / "controller")
+    staging = tmp_path / "external" / "reels-staging"
+    controller.register_project(
+        manifest(tmp_path, workspaces={"reels-staging": str(staging)})
+    )
+
+    without_workspace = controller.build_project_task("sample-project", "Inspect the repo.")
+    assert without_workspace["selected_workspaces"] == {}
+    assert str(staging) not in without_workspace["allowed_paths"]
+
+    with_workspace = controller.build_project_task(
+        "sample-project",
+        "Inspect the repo and staging.",
+        workspaces=["reels-staging"],
+    )
+    assert with_workspace["selected_workspaces"] == {"reels-staging": str(staging)}
+    assert str(staging) in with_workspace["allowed_paths"]
+
+    with pytest.raises(ControllerError, match="unknown project workspace"):
+        controller.build_project_task("sample-project", "Inspect.", workspaces=["missing"])
+    controller.close()
+
+
+def test_project_manifest_validates_workspace_paths(tmp_path):
+    controller = Controller(tmp_path / "controller")
+    with pytest.raises(ControllerError, match="workspace name"):
+        controller.register_project(manifest(tmp_path, workspaces={"../escape": "/tmp/x"}))
+    with pytest.raises(ControllerError, match="workspace path must be absolute"):
+        controller.register_project(manifest(tmp_path, workspaces={"staging": "relative/path"}))
+    controller.close()

@@ -186,6 +186,7 @@ class Controller:
         *,
         engine: str | None = None,
         idempotency_key: str | None = None,
+        workspaces: list[str] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(instruction, str) or not instruction.strip():
             raise ControllerError("project task instruction is required")
@@ -215,6 +216,14 @@ class Controller:
                 "mode": "explicit" if engine is not None else "project-default",
                 "selected_engine": selected_engine,
             }
+
+        requested_workspaces = list(dict.fromkeys(workspaces or []))
+        declared_workspaces = manifest.get("workspaces", {})
+        selected_workspaces: dict[str, str] = {}
+        for name in requested_workspaces:
+            if name not in declared_workspaces:
+                raise ControllerError(f"unknown project workspace: {name}")
+            selected_workspaces[name] = declared_workspaces[name]
 
         job_id = str(uuid.uuid4())
         runtime_directory = manifest["runtime_directory"].rstrip("/\\")
@@ -247,7 +256,9 @@ class Controller:
                 manifest["working_directory"],
                 runtime_directory,
                 *manifest.get("allowed_paths", []),
+                *selected_workspaces.values(),
             ])),
+            "selected_workspaces": selected_workspaces,
             "project_manifest_version": 1,
         }
         if manifest.get("worker_id"):
@@ -482,6 +493,17 @@ class Controller:
             paths = manifest["allowed_paths"]
             if not isinstance(paths, list) or any(not isinstance(item, str) or not item for item in paths):
                 raise ControllerError("invalid project allowed_paths")
+        if manifest.get("workspaces") is not None:
+            workspaces = manifest["workspaces"]
+            if not isinstance(workspaces, dict):
+                raise ControllerError("invalid project workspaces")
+            for name, path in workspaces.items():
+                if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name):
+                    raise ControllerError("invalid project workspace name")
+                if not isinstance(path, str) or not path:
+                    raise ControllerError("invalid project workspace path")
+                if manifest["platform"] == "linux" and not path.startswith("/"):
+                    raise ControllerError("project workspace path must be absolute")
         if manifest.get("timeout_seconds") is not None and (
             not isinstance(manifest["timeout_seconds"], int) or not 1 <= manifest["timeout_seconds"] <= 7200
         ):

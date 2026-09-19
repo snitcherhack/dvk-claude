@@ -20,6 +20,7 @@ def test_project_cli_register_and_build_multiline_instruction(tmp_path):
         "allowed_engines": ["codex", "hybrid"],
         "default_engine": "codex",
         "capabilities": ["git", "tests"],
+        "workspaces": {"staging": "/mnt/a/PROYECTOS/reels-staging"},
     }
     manifest_file = tmp_path / "project.json"
     manifest_file.write_text(json.dumps(manifest), encoding="utf-8")
@@ -85,3 +86,19 @@ def test_project_cli_register_and_build_multiline_instruction(tmp_path):
     assert auto_task["execution_engine"] == "hybrid"
     assert auto_task["engine_selection"]["mode"] == "auto"
     assert auto_task["engine_selection"]["rule"] == "hybrid_review_or_high_impact"
+
+    workspace_output = tmp_path / "workspace-task.json"
+    run(
+        "task",
+        "build",
+        "cli-project",
+        "--workspace",
+        "staging",
+        "--instruction",
+        "Inspect the selected staging workspace.",
+        "--output",
+        str(workspace_output),
+    )
+    workspace_task = json.loads(workspace_output.read_text(encoding="utf-8"))
+    assert workspace_task["selected_workspaces"] == {"staging": "/mnt/a/PROYECTOS/reels-staging"}
+    assert "/mnt/a/PROYECTOS/reels-staging" in workspace_task["allowed_paths"]

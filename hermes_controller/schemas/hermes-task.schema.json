@@ -37,13 +37,17 @@
       },
       "additionalProperties": false
     },
-    "human_gates": {"type": "array", "items": {"enum": ["WINDOWS_FINAL_RENDER_REQUIRED", "YOUTUBE_PUBLICATION_APPROVAL", "LICENSE_REVIEW_REQUIRED"]}},
+    "human_gates": {"type": "array", "items": {"enum": ["WINDOWS_FINAL_RENDER_REQUIRED", "YOUTUBE_PUBLICATION_APPROVAL", "LICENSE_REVIEW_REQUIRED", "VIBES_AI_MANUAL_GENERATION_REQUIRED"]}},
     "idempotency_policy": {"enum": ["safe_retry", "manual_reconcile"]},
     "depends_on": {"type": "string"},
     "idempotency_key": {"type": "string"},
     "working_directory": {"type": "string"},
     "run_output_dir": {"type": "string"},
     "allowed_paths": {"type": "array", "items": {"type": "string"}},
+    "selected_workspaces": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
     "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 7200},
     "max_turns": {"type": "integer", "minimum": 1, "maximum": 50},
     "project_manifest_version": {"type": "integer", "minimum": 1}

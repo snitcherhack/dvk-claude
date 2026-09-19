@@ -28,6 +28,7 @@ def _add_instruction_arguments(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--instruction-file")
     parser.add_argument("--engine", choices=("auto", "codex", "claude", "hybrid", "native"))
     parser.add_argument("--idempotency-key")
+    parser.add_argument("--workspace", action="append", default=[])
 
 
 def main() -> None:
@@ -130,6 +131,7 @@ def main() -> None:
                 _instruction(args),
                 engine=args.engine,
                 idempotency_key=args.idempotency_key,
+                workspaces=args.workspace,
             )
             if args.task_command == "build":
                 if args.output:

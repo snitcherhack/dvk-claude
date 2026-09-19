@@ -169,3 +169,33 @@ the Controller if a nonconforming worker bypasses that normalization.
 For `DONE`, `BLOCKED` and `FAILED`, the result gate must be null. The worker
 clears accidental model-generated gates from non-WAIT_USER results before
 ingestion; the Controller independently enforces the same invariant.
+
+## Optional project workspaces
+
+A project may declare named external workspaces that are not Git repositories.
+They are not automatically granted to every job. A task must opt in explicitly
+with one or more `--workspace` flags.
+
+Example manifest fragment:
+
+```json
+{
+  "workspaces": {
+    "reels-staging": "/mnt/a/PROYECTOS/reels-staging"
+  }
+}
+```
+
+Then a task can opt into that workspace:
+
+```bash
+python3 -m hermes_controller --runtime-root /path/to/controller \
+  task create reels-automation \
+  --workspace reels-staging \
+  --instruction-file /tmp/task.md
+```
+
+The selected workspace is copied into `selected_workspaces` and appended to the
+task-scoped `allowed_paths`. Unselected workspaces remain inaccessible to the
+job even though the project manifest knows about them. The worker-level
+authorized roots remain the outer security boundary.
