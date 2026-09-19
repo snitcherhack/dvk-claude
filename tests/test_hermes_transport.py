@@ -303,3 +303,15 @@ def test_worker_blocks_undeclared_wait_user_gate(api):
     assert result["status"] == "BLOCKED"
     assert result["gate"] is None
     assert "undeclared human gate" in result["summary"]
+
+def test_large_client_payload_uses_gzip_transport(api):
+    controller, url, root = api
+    d = daemon(url, root)
+    d.register()
+    response = d.client.request(
+        "POST",
+        "/v1/workers/heartbeat",
+        {"worker_id": "main-linux", "padding": "x" * 4096},
+    )
+    assert response == {"received": True}
+    assert controller.worker_status("main-linux")["state"] == "ONLINE"

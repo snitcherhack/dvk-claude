@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
@@ -25,7 +26,15 @@ class HTTPControllerClient:
 
     def request(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         data = json.dumps(payload).encode() if payload is not None else None
-        req = Request(self.url + path, data=data, method=method, headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json", "X-Hermes-Worker-Id": self.worker_id})
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Content-Type": "application/json",
+            "X-Hermes-Worker-Id": self.worker_id,
+        }
+        if data is not None and len(data) > 1024:
+            data = gzip.compress(data)
+            headers["Content-Encoding"] = "gzip"
+        req = Request(self.url + path, data=data, method=method, headers=headers)
         try:
             with urlopen(req, timeout=self.timeout_s) as response: return json.loads(response.read())
         except HTTPError as exc:

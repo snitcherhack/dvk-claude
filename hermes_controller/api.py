@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hmac
 import json
 import threading
@@ -12,6 +13,7 @@ from .controller import Controller, ControllerError, StaleResultError
 
 
 MAX_BODY_BYTES = 4 * 1024 * 1024
+MAX_DECOMPRESSED_BODY_BYTES = 4 * 1024 * 1024
 REQUEST_SOCKET_TIMEOUT_S = 10
 
 
@@ -40,7 +42,15 @@ class ControllerRequestHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         if length < 0 or length > MAX_BODY_BYTES:
             raise ControllerError("request body exceeds limit")
-        data = json.loads(self.rfile.read(length) or b"{}")
+        raw = self.rfile.read(length) or b"{}"
+        if self.headers.get("Content-Encoding", "").lower() == "gzip":
+            try:
+                raw = gzip.decompress(raw)
+            except OSError as exc:
+                raise ControllerError("invalid gzip request body") from exc
+            if len(raw) > MAX_DECOMPRESSED_BODY_BYTES:
+                raise ControllerError("decompressed request body exceeds limit")
+        data = json.loads(raw)
         if not isinstance(data, dict):
             raise ControllerError("JSON body must be an object")
         return data
