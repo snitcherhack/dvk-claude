@@ -13,7 +13,7 @@ from hermes_controller.adapters import ClaudeAgentAdapter, EngineRoutingAdapter,
 from hermes_controller.api import serve
 from hermes_controller.clock import FakeClock
 from hermes_controller.controller import Controller, StaleResultError
-from hermes_controller.worker import HTTPControllerClient, TransportError, WorkerDaemon
+from hermes_controller.worker import HTTPControllerClient, StaleLeaseTransportError, TransportError, WorkerDaemon
 
 MAIN = {"worker_id": "main-linux", "platform": "linux", "environment": "WSL/Kali", "capabilities": ["codex", "git", "python", "tests", "image_qa", "network"], "max_concurrent_jobs": 1}
 WINDOWS = {"worker_id": "windows-render", "platform": "windows", "environment": "Windows", "capabilities": ["ffmpeg", "final_render", "mp4_qa", "artifact_hash"], "max_concurrent_jobs": 1}
@@ -102,6 +102,35 @@ def test_h_loss_preserves_local_run_state(api):
     d.active_claim = claim; d._save_state(claim)
     with pytest.raises(TransportError): d.once()
     assert d.state_path.exists() and d._load_state()["claim"]["run_id"] == claim["run_id"]
+
+
+
+def test_worker_discards_stale_pending_envelope_and_reclaims(api):
+    controller, url, root = api
+    d = daemon(url, root)
+    d.register()
+    job = controller.enqueue(task())
+    claim = d.client.claim()
+    item = envelope(claim)
+    controller.db.execute("UPDATE runs SET state='STALE' WHERE run_id=?", (claim["run_id"],))
+    controller.db.execute(
+        "UPDATE jobs SET state='QUEUED', active_run_id=NULL WHERE job_id=?",
+        (job,),
+    )
+    d.active_claim = claim
+    d.pending_envelope = item
+    d._save_state(claim, item)
+
+    with pytest.raises(StaleLeaseTransportError):
+        d.client.ingest(item)
+    assert d.once()
+    assert d.active_claim is None and d.pending_envelope is None
+    assert not d.state_path.exists()
+
+    assert d.once()
+    status = controller.status(job)
+    assert status["state"] == "DONE"
+    assert status["attempt"] == 2
 
 
 def test_i_restart_reconciles_persisted_epoch_lease(tmp_path):

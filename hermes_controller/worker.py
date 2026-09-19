@@ -16,6 +16,7 @@ from .adapters import AdapterResult, ClaudeAgentAdapter, CodexRunAdapter, CxhRun
 
 
 class TransportError(RuntimeError): pass
+class StaleLeaseTransportError(TransportError): pass
 
 
 class HTTPControllerClient:
@@ -27,7 +28,12 @@ class HTTPControllerClient:
         req = Request(self.url + path, data=data, method=method, headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json", "X-Hermes-Worker-Id": self.worker_id})
         try:
             with urlopen(req, timeout=self.timeout_s) as response: return json.loads(response.read())
-        except (HTTPError, URLError, OSError) as exc: raise TransportError(str(exc)) from exc
+        except HTTPError as exc:
+            if exc.code == 409:
+                raise StaleLeaseTransportError(str(exc)) from exc
+            raise TransportError(str(exc)) from exc
+        except (URLError, OSError) as exc:
+            raise TransportError(str(exc)) from exc
 
     def enrol(self, descriptor: dict[str, Any]) -> dict[str, Any]: return self.request("POST", "/v1/workers/enrol", descriptor)
     def heartbeat_worker(self) -> dict[str, Any]: return self.request("POST", "/v1/workers/heartbeat", {"worker_id": self.worker_id})
@@ -204,7 +210,11 @@ class WorkerDaemon:
         if not claim: return False
         self.active_claim = claim; self._save_state(claim, self.pending_envelope)
         if self.pending_envelope:
-            self.client.ingest(self.pending_envelope)
+            try:
+                self.client.ingest(self.pending_envelope)
+            except StaleLeaseTransportError:
+                self.pending_envelope = None; self.active_claim = None; self._save_state(None)
+                return True
             self.pending_envelope = None; self.active_claim = None; self._save_state(None)
             return True
         result_box: list[Any] = []
@@ -218,17 +228,35 @@ class WorkerDaemon:
                 result_box.append(AdapterResult(status="FAILED", summary=f"worker task preparation failed: {type(exc).__name__}"))
         thread = threading.Thread(target=execute_claim, daemon=True)
         thread.start()
+        lease_lost = False
         while thread.is_alive():
             thread.join(self.heartbeat_interval_s)
             if thread.is_alive():
-                self.client.heartbeat_worker(); self.client.heartbeat_run(claim)
+                try:
+                    self.client.heartbeat_worker(); self.client.heartbeat_run(claim)
+                except StaleLeaseTransportError:
+                    lease_lost = True
+                    thread.join()
+                    break
+                except TransportError:
+                    # Do not start a second adapter for the same claim while the
+                    # current one is still running. Persist the claim and keep
+                    # waiting; a completed result will be retried from disk.
+                    continue
+        if lease_lost:
+            self.pending_envelope = None; self.active_claim = None; self._save_state(None)
+            return True
         if not result_box:
             raise RuntimeError("adapter did not return a result")
         result = self._normalize_gate_result(result_box[0], claim["task"])
         now = time.time_ns() // 1_000_000
         envelope = {**{key: claim[key] for key in ("job_id", "run_id", "attempt", "lease_id", "lease_token")}, "worker_id": self.worker["worker_id"], "started_at": now, "finished_at": now, "engine": self._execution_engine_for_task(claim["task"]), "engine_result": result.result(), "artifacts": [], "hashes": {}}
         self.pending_envelope = envelope; self._save_state(claim, envelope)
-        self.client.ingest(envelope)
+        try:
+            self.client.ingest(envelope)
+        except StaleLeaseTransportError:
+            self.pending_envelope = None; self.active_claim = None; self._save_state(None)
+            return True
         self.pending_envelope = None; self.active_claim = None; self._save_state(None)
         return True
 
