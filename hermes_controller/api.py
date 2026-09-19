@@ -11,6 +11,10 @@ from typing import Any
 from .controller import Controller, ControllerError, StaleResultError
 
 
+MAX_BODY_BYTES = 4 * 1024 * 1024
+REQUEST_SOCKET_TIMEOUT_S = 10
+
+
 class ControllerHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -25,11 +29,17 @@ class ControllerHTTPServer(ThreadingHTTPServer):
 class ControllerRequestHandler(BaseHTTPRequestHandler):
     server: ControllerHTTPServer
 
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(REQUEST_SOCKET_TIMEOUT_S)
+
     def log_message(self, _format: str, *_args: object) -> None:
         return  # callers choose their own service logging in a later phase
 
     def _body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
+        if length < 0 or length > MAX_BODY_BYTES:
+            raise ControllerError("request body exceeds limit")
         data = json.loads(self.rfile.read(length) or b"{}")
         if not isinstance(data, dict):
             raise ControllerError("JSON body must be an object")
@@ -76,12 +86,16 @@ class ControllerRequestHandler(BaseHTTPRequestHandler):
             self._reply(404, {"error": str(exc)})
 
     def do_POST(self) -> None:
-        with self.server.request_lock:
-            self._do_POST()
-
-    def _do_POST(self) -> None:
         try:
             body = self._body()
+        except (ControllerError, ValueError, json.JSONDecodeError) as exc:
+            self._reply(400, {"error": str(exc)})
+            return
+        with self.server.request_lock:
+            self._do_POST(body)
+
+    def _do_POST(self, body: dict[str, Any]) -> None:
+        try:
             if self.path == "/v1/workers/enrol":
                 worker_id = body.get("worker_id", "")
                 expected = self.server.enrollment_tokens.get(worker_id, "")

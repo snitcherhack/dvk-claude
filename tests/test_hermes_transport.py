@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import time
+from urllib.request import urlopen
 
 import pytest
 
@@ -35,6 +37,32 @@ def api(tmp_path):
 
 def daemon(url, root, worker=MAIN, token="test-main", **extra):
     return WorkerDaemon({"controller_url": url, "token": token, "state_file": str(root / f"{worker['worker_id']}.json"), "heartbeat_interval_ms": 10, "retry_backoff_ms": 1, "max_backoff_ms": 5, "worker": worker, **extra})
+
+
+
+def test_partial_post_body_does_not_block_health(api):
+    _controller, url, _root = api
+    port = int(url.rsplit(":", 1)[1])
+    sock = socket.create_connection(("127.0.0.1", port), timeout=1)
+    try:
+        body = b'{"worker_id":"main-linux"}'
+        headers = (
+            "POST /v1/workers/heartbeat HTTP/1.1\r\n"
+            f"Host: 127.0.0.1:{port}\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "\r\n"
+        ).encode("utf-8")
+        sock.sendall(headers + body[:-1])
+        time.sleep(0.05)
+        with urlopen(url + "/health", timeout=1) as response:
+            assert response.status == 200
+            assert json.loads(response.read()) == {"status": "ok"}
+        sock.sendall(body[-1:])
+        sock.settimeout(1)
+        assert b"401" in sock.recv(1024)
+    finally:
+        sock.close()
 
 
 def test_a_register_api_online_and_g_bad_token(api):
