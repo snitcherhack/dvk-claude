@@ -1,0 +1,27 @@
+{
+  "project_id": "social-branding",
+  "repository": "file:///mnt/a/PROYECTOS/social-branding",
+  "ref": "master",
+  "platform": "linux",
+  "worker_id": "main-linux",
+  "working_directory": "/home/deiv/Proyectos/social-branding",
+  "runtime_directory": "/home/deiv/.local/state/dvk-hermes-projects/social-branding",
+  "allowed_engines": [
+    "codex",
+    "claude",
+    "hybrid"
+  ],
+  "default_engine": "auto",
+  "engine_policy": "balanced-v1",
+  "capabilities": [
+    "git"
+  ],
+  "task_type": "development",
+  "execution_profile": "hermes",
+  "human_gates": [
+    "SOCIAL_PUBLICATION_APPROVAL_REQUIRED"
+  ],
+  "idempotency_policy": "safe_retry",
+  "timeout_seconds": 1200,
+  "max_turns": 12
+}
