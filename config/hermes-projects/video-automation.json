@@ -1,0 +1,35 @@
+{
+  "project_id": "video-automation",
+  "repository": "git@github.com:snitcherhack/video-automation.git",
+  "ref": "main",
+  "platform": "linux",
+  "worker_id": "main-linux",
+  "working_directory": "/home/deiv/Proyectos/video-automation",
+  "runtime_directory": "/home/deiv/.local/state/dvk-hermes-projects/video-automation",
+  "allowed_paths": [
+    "/home/deiv/Proyectos/brain/proyectos/youtube"
+  ],
+  "allowed_engines": [
+    "codex",
+    "claude",
+    "hybrid"
+  ],
+  "default_engine": "auto",
+  "engine_policy": "balanced-v1",
+  "capabilities": [
+    "git",
+    "python",
+    "tests",
+    "image_qa"
+  ],
+  "task_type": "development",
+  "execution_profile": "hermes",
+  "human_gates": [
+    "YOUTUBE_PUBLICATION_APPROVAL",
+    "LICENSE_REVIEW_REQUIRED",
+    "WINDOWS_FINAL_RENDER_REQUIRED"
+  ],
+  "idempotency_policy": "safe_retry",
+  "timeout_seconds": 1800,
+  "max_turns": 12
+}

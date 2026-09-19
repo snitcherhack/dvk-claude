@@ -1,0 +1,36 @@
+{
+  "project_id": "video-automation-winner-timeline",
+  "repository": "git@github.com:snitcherhack/video-automation.git",
+  "ref": "feat/winner-timeline",
+  "platform": "linux",
+  "worker_id": "main-linux",
+  "working_directory": "/home/deiv/Proyectos/video-automation-winner-timeline",
+  "runtime_directory": "/home/deiv/.local/state/dvk-hermes-projects/video-automation-winner-timeline",
+  "allowed_paths": [
+    "/home/deiv/Proyectos/brain/proyectos/youtube",
+    "/home/deiv/winner-timeline-portrait-qa"
+  ],
+  "allowed_engines": [
+    "codex",
+    "claude",
+    "hybrid"
+  ],
+  "default_engine": "auto",
+  "engine_policy": "balanced-v1",
+  "capabilities": [
+    "git",
+    "python",
+    "tests",
+    "image_qa"
+  ],
+  "task_type": "development",
+  "execution_profile": "hermes",
+  "human_gates": [
+    "YOUTUBE_PUBLICATION_APPROVAL",
+    "LICENSE_REVIEW_REQUIRED",
+    "WINDOWS_FINAL_RENDER_REQUIRED"
+  ],
+  "idempotency_policy": "safe_retry",
+  "timeout_seconds": 1800,
+  "max_turns": 12
+}
