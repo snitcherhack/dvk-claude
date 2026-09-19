@@ -1,0 +1,26 @@
+{
+  "project_id": "dvk-claude",
+  "repository": "git@github.com:snitcherhack/dvk-claude.git",
+  "ref": "main",
+  "platform": "linux",
+  "worker_id": "main-linux",
+  "working_directory": "/home/deiv/Proyectos/dvk-claude",
+  "runtime_directory": "/home/deiv/.local/state/dvk-hermes-projects/dvk-claude",
+  "allowed_engines": [
+    "codex",
+    "claude",
+    "hybrid"
+  ],
+  "default_engine": "codex",
+  "capabilities": [
+    "git",
+    "python",
+    "tests"
+  ],
+  "task_type": "development",
+  "execution_profile": "hermes",
+  "human_gates": [],
+  "idempotency_policy": "safe_retry",
+  "timeout_seconds": 1800,
+  "max_turns": 12
+}
