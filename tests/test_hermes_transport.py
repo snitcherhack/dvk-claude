@@ -154,3 +154,67 @@ def test_l_two_daemons_one_claim_and_m_non_idempotent_not_redistributed(api, mon
     controller.db.execute("UPDATE runs SET lease_expires_at=0 WHERE run_id=?", (claim["run_id"],))
     controller.reconcile_expired_leases()
     assert controller.status(job)["state"] == "NEEDS_RECONCILIATION"
+
+
+def test_worker_materializes_inline_task_inside_configured_root(api, monkeypatch):
+    controller, url, root = api
+    material_root = root / "materialized"
+    monkeypatch.setenv("HERMES_TASK_ROOTS", str(material_root))
+    d = daemon(
+        url,
+        root,
+        task_materialization_roots_env="HERMES_TASK_ROOTS",
+    )
+    d.register()
+    text = "Read-only inline task."
+    import hashlib
+    inline = {
+        **task(),
+        "job_id": "inline-job",
+        "brain": {
+            "repository": "inline://hermes-projects/test",
+            "ref": "test",
+            "commit": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        },
+        "task_text": text,
+        "run_output_dir": str(material_root / "inline-job"),
+        "allowed_paths": [str(material_root)],
+        "execution_engine": "codex",
+    }
+    job = controller.enqueue(inline)
+    assert d.once()
+    assert controller.status(job)["state"] == "DONE"
+    task_file = material_root / "inline-job" / "hermes-task.md"
+    assert task_file.read_text(encoding="utf-8") == text
+    assert task_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_worker_blocks_inline_task_outside_materialization_root(api, monkeypatch):
+    controller, url, root = api
+    material_root = root / "materialized"
+    monkeypatch.setenv("HERMES_TASK_ROOTS", str(material_root))
+    d = daemon(
+        url,
+        root,
+        task_materialization_roots_env="HERMES_TASK_ROOTS",
+    )
+    d.register()
+    text = "Do not execute."
+    import hashlib
+    inline = {
+        **task(),
+        "job_id": "outside-inline-job",
+        "brain": {
+            "repository": "inline://hermes-projects/test",
+            "ref": "test",
+            "commit": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        },
+        "task_text": text,
+        "run_output_dir": str(root / "outside" / "run"),
+        "allowed_paths": [str(root / "outside")],
+        "execution_engine": "codex",
+    }
+    job = controller.enqueue(inline)
+    assert d.once()
+    assert controller.status(job)["state"] == "BLOCKED"
+    assert not (root / "outside" / "run" / "hermes-task.md").exists()

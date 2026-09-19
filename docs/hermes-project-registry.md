@@ -1,0 +1,123 @@
+# Hermes project registry and task builder
+
+Hermes projects are controller-owned manifests that describe how a repository may
+be executed without hard-coding project-specific paths in the Controller.
+
+## Project manifest
+
+Example for a Linux project on `main-linux`:
+
+```json
+{
+  "project_id": "example-api",
+  "repository": "git@github.com:owner/example-api.git",
+  "ref": "main",
+  "platform": "linux",
+  "worker_id": "main-linux",
+  "working_directory": "/home/deiv/Proyectos/example-api",
+  "runtime_directory": "/home/deiv/.local/state/dvk-hermes-projects/example-api",
+  "allowed_engines": ["codex", "claude", "hybrid"],
+  "default_engine": "codex",
+  "capabilities": ["git", "python", "tests"],
+  "task_type": "development",
+  "execution_profile": "hermes",
+  "human_gates": [],
+  "idempotency_policy": "safe_retry",
+  "timeout_seconds": 900,
+  "max_turns": 12
+}
+```
+
+`working_directory` is the repository checkout on the target worker.
+`runtime_directory` is scratch/state space for immutable task snapshots and
+run outputs. A project may optionally add more task-scoped `allowed_paths`, but
+the worker still applies its own maximum authorized roots.
+
+`worker_id` is optional. When present, only that worker may claim the task even
+if another worker advertises the same platform and capabilities.
+
+## Registry CLI
+
+All commands use the Controller runtime root:
+
+```bash
+python3 -m hermes_controller --runtime-root /path/to/controller project validate project.json
+python3 -m hermes_controller --runtime-root /path/to/controller project register project.json
+python3 -m hermes_controller --runtime-root /path/to/controller project list
+python3 -m hermes_controller --runtime-root /path/to/controller project show example-api
+python3 -m hermes_controller --runtime-root /path/to/controller project remove example-api
+```
+
+Register is an upsert: re-registering the same `project_id` updates the
+manifest while preserving the original registration timestamp.
+
+## Building and creating tasks
+
+Hermes can build a task without a pre-existing task file:
+
+```bash
+python3 -m hermes_controller --runtime-root /path/to/controller \
+  task build example-api \
+  --engine hybrid \
+  --instruction-file /tmp/task.md \
+  --output /tmp/hermes-task.json
+```
+
+To enqueue directly:
+
+```bash
+python3 -m hermes_controller --runtime-root /path/to/controller \
+  task create example-api \
+  --engine codex \
+  --instruction-file /tmp/task.md
+```
+
+For short instructions `--instruction "text"` is also supported. For
+automation and multiline tasks, `--instruction-file` avoids shell quoting
+differences between Windows, WSL and Linux.
+
+The task builder:
+
+- selects only an engine allowed by the project;
+- adds the engine's required capabilities automatically;
+- pins an optional `worker_id`;
+- generates a unique run directory;
+- embeds the instruction as `task_text`;
+- hashes that instruction into the immutable inline brain reference;
+- limits task paths to the project workspace/runtime plus explicitly declared
+  extra paths.
+
+## Inline task materialization
+
+Inline tasks do not require the Controller to write into a worker filesystem.
+
+The Controller stores the instruction inside the queued task. After the worker
+claims it, the worker verifies the SHA-256 task hash, checks the destination
+against its configured materialization roots, and writes:
+
+```text
+<runtime_directory>/<job_id>/hermes-task.md
+```
+
+with mode `0600`. The existing Codex, Claude and Hybrid adapters then consume
+that local snapshot exactly like a traditional `brain.task_file`.
+
+This keeps the Controller independent of worker filesystems while preserving an
+immutable task snapshot and the existing path-security model.
+
+## Worker authorization model
+
+For a general-purpose Linux worker, use broad maximum roots such as:
+
+```text
+/home/deiv/Proyectos
+/home/deiv/.local/state/dvk-hermes-projects
+```
+
+These are worker-level ceilings, not per-job permissions. Every task still
+carries its narrower `allowed_paths`, which Codex and Claude enforce before
+accessing or changing files.
+
+The project registry therefore does not grant arbitrary filesystem access: a
+project path must be inside both the worker maximum roots and the task's
+allowed-path scope.

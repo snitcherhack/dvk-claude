@@ -8,6 +8,7 @@ import sqlite3
 import uuid
 import hashlib
 import hmac
+import re
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,10 @@ class Controller:
               entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
               event_type TEXT NOT NULL, payload_json TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS projects (
+              project_id TEXT PRIMARY KEY, manifest_json TEXT NOT NULL,
+              registered_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+            );
             """
         )
 
@@ -123,6 +128,117 @@ class Controller:
             raise ControllerError(f"unknown worker: {worker_id}")
         age = self.clock.now() - row["last_heartbeat_at"]
         return {"worker_id": worker_id, "state": "OFFLINE" if age > WORKER_OFFLINE_MS else "ONLINE", "heartbeat_age_ms": age}
+
+    def register_project(self, manifest: dict[str, Any]) -> str:
+        self._validate_project(manifest)
+        project_id = manifest["project_id"]
+        now = self.clock.now()
+        payload = json.dumps(manifest, sort_keys=True)
+        self.db.execute(
+            """INSERT INTO projects VALUES (?, ?, ?, ?)
+               ON CONFLICT(project_id) DO UPDATE SET
+                 manifest_json=excluded.manifest_json,
+                 updated_at=excluded.updated_at""",
+            (project_id, payload, now, now),
+        )
+        self._event("project", project_id, "PROJECT_REGISTERED")
+        return project_id
+
+    def list_projects(self) -> list[dict[str, Any]]:
+        rows = self.db.execute(
+            "SELECT project_id, manifest_json, registered_at, updated_at FROM projects ORDER BY project_id"
+        ).fetchall()
+        return [
+            {
+                "project_id": row["project_id"],
+                "manifest": json.loads(row["manifest_json"]),
+                "registered_at": row["registered_at"],
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def project(self, project_id: str) -> dict[str, Any]:
+        row = self.db.execute(
+            "SELECT project_id, manifest_json, registered_at, updated_at FROM projects WHERE project_id=?",
+            (project_id,),
+        ).fetchone()
+        if row is None:
+            raise ControllerError(f"unknown project: {project_id}")
+        return {
+            "project_id": row["project_id"],
+            "manifest": json.loads(row["manifest_json"]),
+            "registered_at": row["registered_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def remove_project(self, project_id: str) -> None:
+        cursor = self.db.execute("DELETE FROM projects WHERE project_id=?", (project_id,))
+        if not cursor.rowcount:
+            raise ControllerError(f"unknown project: {project_id}")
+        self._event("project", project_id, "PROJECT_REMOVED")
+
+    def build_project_task(
+        self,
+        project_id: str,
+        instruction: str,
+        *,
+        engine: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(instruction, str) or not instruction.strip():
+            raise ControllerError("project task instruction is required")
+        if len(instruction.encode("utf-8")) > 1_048_576:
+            raise ControllerError("project task instruction exceeds 1 MiB")
+
+        manifest = self.project(project_id)["manifest"]
+        selected_engine = engine or manifest["default_engine"]
+        if selected_engine not in manifest["allowed_engines"]:
+            raise ControllerError(f"engine is not allowed for project: {selected_engine}")
+
+        job_id = str(uuid.uuid4())
+        runtime_directory = manifest["runtime_directory"].rstrip("/\\")
+        run_output_dir = f"{runtime_directory}/{job_id}"
+        capabilities = set(manifest.get("capabilities", []))
+        capabilities.update(ENGINE_CAPABILITIES[selected_engine])
+
+        task: dict[str, Any] = {
+            "job_id": job_id,
+            "brain": {
+                "repository": f"inline://hermes-projects/{project_id}",
+                "ref": project_id,
+                "commit": hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
+            },
+            "task_text": instruction,
+            "project": project_id,
+            "repository": manifest["repository"],
+            "ref": manifest["ref"],
+            "task_type": manifest.get("task_type", "development"),
+            "platform": manifest["platform"],
+            "required_capabilities": sorted(capabilities),
+            "execution_profile": manifest.get("execution_profile", "hermes"),
+            "execution_engine": selected_engine,
+            "human_gates": list(manifest.get("human_gates", [])),
+            "idempotency_policy": manifest.get("idempotency_policy", "safe_retry"),
+            "working_directory": manifest["working_directory"],
+            "run_output_dir": run_output_dir,
+            "allowed_paths": list(dict.fromkeys([
+                manifest["working_directory"],
+                runtime_directory,
+                *manifest.get("allowed_paths", []),
+            ])),
+            "project_manifest_version": 1,
+        }
+        if manifest.get("worker_id"):
+            task["worker_id"] = manifest["worker_id"]
+        if manifest.get("timeout_seconds") is not None:
+            task["timeout_seconds"] = manifest["timeout_seconds"]
+        if manifest.get("max_turns") is not None:
+            task["max_turns"] = manifest["max_turns"]
+        if idempotency_key:
+            task["idempotency_key"] = idempotency_key
+        self._validate_task(task)
+        return task
 
     def enqueue(self, task: dict[str, Any]) -> str:
         self._validate_task(task)
@@ -265,7 +381,65 @@ class Controller:
 
     @staticmethod
     def _worker_matches(worker: dict[str, Any], task: dict[str, Any]) -> bool:
+        target_worker = task.get("worker_id")
+        if target_worker is not None and worker["worker_id"] != target_worker:
+            return False
         return worker["platform"] == task["platform"] and set(task["required_capabilities"]).issubset(worker["capabilities"])
+
+    @staticmethod
+    def _validate_project(manifest: dict[str, Any]) -> None:
+        required = {
+            "project_id", "repository", "ref", "platform", "working_directory",
+            "runtime_directory", "allowed_engines", "default_engine", "capabilities",
+        }
+        if not isinstance(manifest, dict) or not required.issubset(manifest):
+            raise ControllerError("invalid project manifest")
+        project_id = manifest["project_id"]
+        if not isinstance(project_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", project_id):
+            raise ControllerError("invalid project_id")
+        if manifest["platform"] not in {"linux", "windows"}:
+            raise ControllerError("invalid project platform")
+        for key in ("repository", "ref", "working_directory", "runtime_directory"):
+            if not isinstance(manifest.get(key), str) or not manifest[key]:
+                raise ControllerError(f"invalid project field: {key}")
+        if manifest["platform"] == "linux":
+            for key in ("working_directory", "runtime_directory"):
+                if not manifest[key].startswith("/"):
+                    raise ControllerError(f"{key} must be an absolute Linux path")
+        engines = manifest["allowed_engines"]
+        if (
+            not isinstance(engines, list)
+            or not engines
+            or any(engine not in ENGINE_CAPABILITIES for engine in engines)
+            or len(set(engines)) != len(engines)
+        ):
+            raise ControllerError("invalid allowed_engines")
+        if manifest["default_engine"] not in engines:
+            raise ControllerError("default_engine must be allowed")
+        capabilities = manifest["capabilities"]
+        if not isinstance(capabilities, list) or any(not isinstance(item, str) or not item for item in capabilities):
+            raise ControllerError("invalid project capabilities")
+        if manifest.get("worker_id") is not None and (
+            not isinstance(manifest["worker_id"], str) or not manifest["worker_id"]
+        ):
+            raise ControllerError("invalid project worker_id")
+        for key in ("task_type", "execution_profile"):
+            if manifest.get(key) is not None and (
+                not isinstance(manifest[key], str) or not manifest[key]
+            ):
+                raise ControllerError(f"invalid project field: {key}")
+        if manifest.get("allowed_paths") is not None:
+            paths = manifest["allowed_paths"]
+            if not isinstance(paths, list) or any(not isinstance(item, str) or not item for item in paths):
+                raise ControllerError("invalid project allowed_paths")
+        if manifest.get("timeout_seconds") is not None and (
+            not isinstance(manifest["timeout_seconds"], int) or not 1 <= manifest["timeout_seconds"] <= 7200
+        ):
+            raise ControllerError("invalid project timeout_seconds")
+        if manifest.get("max_turns") is not None and (
+            not isinstance(manifest["max_turns"], int) or not 1 <= manifest["max_turns"] <= 50
+        ):
+            raise ControllerError("invalid project max_turns")
 
     @staticmethod
     def _validate_worker(worker: dict[str, Any]) -> None:
@@ -279,8 +453,26 @@ class Controller:
         if not required.issubset(task) or task["idempotency_policy"] not in {"safe_retry", "manual_reconcile"}:
             raise ControllerError("invalid task snapshot")
         brain = task["brain"]
-        if not {"repository", "ref", "commit", "task_file"}.issubset(brain):
+        if not isinstance(brain, dict) or not {"repository", "ref", "commit"}.issubset(brain):
             raise ControllerError("task requires immutable brain reference")
+        task_file = brain.get("task_file")
+        task_text = task.get("task_text")
+        if not task_file and not (isinstance(task_text, str) and task_text.strip()):
+            raise ControllerError("task requires brain.task_file or inline task_text")
+        if task_text is not None:
+            if not isinstance(task_text, str) or not task_text.strip():
+                raise ControllerError("invalid inline task_text")
+            if len(task_text.encode("utf-8")) > 1_048_576:
+                raise ControllerError("inline task_text exceeds 1 MiB")
+            if str(brain.get("repository", "")).startswith("inline://"):
+                expected = hashlib.sha256(task_text.encode("utf-8")).hexdigest()
+                if brain.get("commit") != expected:
+                    raise ControllerError("inline task_text hash does not match brain commit")
+        capabilities = task.get("required_capabilities")
+        if not isinstance(capabilities, list) or any(not isinstance(item, str) or not item for item in capabilities):
+            raise ControllerError("invalid required_capabilities")
+        if task.get("worker_id") is not None and (not isinstance(task["worker_id"], str) or not task["worker_id"]):
+            raise ControllerError("invalid worker_id")
         engine = task.get("execution_engine")
         if engine is not None:
             if engine not in ENGINE_CAPABILITIES:

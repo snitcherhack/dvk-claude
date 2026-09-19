@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -10,7 +12,7 @@ from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
-from .adapters import ClaudeAgentAdapter, CodexRunAdapter, CxhRunAdapter, EngineRoutingAdapter, ExecutionAdapter, HybridAdapter, MockAdapter
+from .adapters import AdapterResult, ClaudeAgentAdapter, CodexRunAdapter, CxhRunAdapter, EngineRoutingAdapter, ExecutionAdapter, HybridAdapter, MockAdapter
 
 
 class TransportError(RuntimeError): pass
@@ -43,6 +45,12 @@ class WorkerDaemon:
         self.heartbeat_interval_s = config.get("heartbeat_interval_ms", 30_000) / 1000
         self.backoff_s, self.max_backoff_s = config.get("retry_backoff_ms", 1_000) / 1000, config.get("max_backoff_ms", 30_000) / 1000
         self.state_path = Path(config.get("state_file", "worker-state.json"))
+        roots_env = config.get("task_materialization_roots_env")
+        self.task_materialization_roots = [
+            Path(item).resolve()
+            for item in (os.environ.get(roots_env, "").split(os.pathsep) if roots_env else [])
+            if item
+        ]
         saved = self._load_state()
         self.active_claim: dict[str, Any] | None = saved.get("claim") if saved else None
         self.pending_envelope: dict[str, Any] | None = saved.get("pending_envelope") if saved else None
@@ -126,6 +134,39 @@ class WorkerDaemon:
             return explicit
         return "codex" if "codex" in task.get("required_capabilities", []) else "native"
 
+    def _materialize_inline_task(self, task: dict[str, Any]) -> dict[str, Any]:
+        task_text = task.get("task_text")
+        if task_text is None:
+            return task
+        if not isinstance(task_text, str) or not task_text.strip():
+            raise ValueError("inline task_text is invalid")
+        if len(task_text.encode("utf-8")) > 1_048_576:
+            raise ValueError("inline task_text exceeds 1 MiB")
+        run_output = task.get("run_output_dir")
+        if not isinstance(run_output, str) or not run_output:
+            raise ValueError("inline tasks require run_output_dir")
+        target_dir = Path(run_output).resolve()
+        if not self.task_materialization_roots:
+            raise ValueError("inline task materialization is not configured")
+        if not any(target_dir == root or root in target_dir.parents for root in self.task_materialization_roots):
+            raise ValueError("run_output_dir is outside task materialization roots")
+        brain = task.get("brain")
+        if not isinstance(brain, dict):
+            raise ValueError("inline task requires brain metadata")
+        if str(brain.get("repository", "")).startswith("inline://"):
+            digest = hashlib.sha256(task_text.encode("utf-8")).hexdigest()
+            if brain.get("commit") != digest:
+                raise ValueError("inline task hash does not match brain commit")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        task_file = target_dir / "hermes-task.md"
+        task_file.write_text(task_text, encoding="utf-8")
+        task_file.chmod(0o600)
+        prepared = json.loads(json.dumps(task))
+        prepared_brain = dict(prepared["brain"])
+        prepared_brain["task_file"] = str(task_file)
+        prepared["brain"] = prepared_brain
+        return prepared
+
     def once(self) -> bool:
         self.client.heartbeat_worker()
         claim = self.active_claim or self.client.claim()
@@ -136,7 +177,15 @@ class WorkerDaemon:
             self.pending_envelope = None; self.active_claim = None; self._save_state(None)
             return True
         result_box: list[Any] = []
-        thread = threading.Thread(target=lambda: result_box.append(self.adapter.execute(claim["task"])), daemon=True)
+        def execute_claim() -> None:
+            try:
+                prepared_task = self._materialize_inline_task(claim["task"])
+                result_box.append(self.adapter.execute(prepared_task))
+            except ValueError as exc:
+                result_box.append(AdapterResult(status="BLOCKED", summary=f"worker task preparation blocked: {exc}"))
+            except OSError as exc:
+                result_box.append(AdapterResult(status="FAILED", summary=f"worker task preparation failed: {type(exc).__name__}"))
+        thread = threading.Thread(target=execute_claim, daemon=True)
         thread.start()
         while thread.is_alive():
             thread.join(self.heartbeat_interval_s)

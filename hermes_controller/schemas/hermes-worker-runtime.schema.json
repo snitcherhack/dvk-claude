@@ -27,6 +27,7 @@
     "controller_url": {"type": "string"},
     "token_env": {"type": "string"},
     "state_file": {"type": "string"},
+    "task_materialization_roots_env": {"type": "string"},
     "enabled": {"type": "boolean"},
     "adapter": {"$ref": "#/$defs/adapter"},
     "adapters": {
