@@ -1,6 +1,6 @@
 {
   "project_id": "deividk-ansible-packs-V2",
-  "repository": "file:///mnt/a/PROYECTOS/deividk-ansible-packs-V2",
+  "repository": "git@github.com:snitcherhack/deividk-ansible-packs-v2.git",
   "ref": "main",
   "platform": "linux",
   "worker_id": "main-linux",

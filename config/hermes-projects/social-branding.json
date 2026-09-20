@@ -1,7 +1,7 @@
 {
   "project_id": "social-branding",
-  "repository": "file:///mnt/a/PROYECTOS/social-branding",
-  "ref": "master",
+  "repository": "git@github.com:snitcherhack/social-branding.git",
+  "ref": "main",
   "platform": "linux",
   "worker_id": "main-linux",
   "working_directory": "/home/deiv/Proyectos/social-branding",

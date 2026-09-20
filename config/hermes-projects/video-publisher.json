@@ -1,6 +1,6 @@
 {
   "project_id": "video-publisher",
-  "repository": "file:///mnt/a/PROYECTOS/video-publisher",
+  "repository": "git@github.com:snitcherhack/video-publisher.git",
   "ref": "main",
   "platform": "linux",
   "worker_id": "main-linux",
