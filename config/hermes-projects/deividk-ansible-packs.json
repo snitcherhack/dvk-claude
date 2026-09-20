@@ -1,11 +1,11 @@
 {
-  "project_id": "deividk-ansible-packs-V2",
-  "repository": "git@github.com:snitcherhack/deividk-ansible-packs-v2.git",
+  "project_id": "deividk-ansible-packs",
+  "repository": "git@github.com:snitcherhack/deividk-ansible-packs.git",
   "ref": "main",
   "platform": "linux",
   "worker_id": "main-linux",
-  "working_directory": "/home/deiv/Proyectos/deividk-ansible-packs-V2",
-  "runtime_directory": "/home/deiv/.local/state/dvk-hermes-projects/deividk-ansible-packs-V2",
+  "working_directory": "/home/deiv/Proyectos/deividk-ansible-packs",
+  "runtime_directory": "/home/deiv/.local/state/dvk-hermes-projects/deividk-ansible-packs",
   "allowed_engines": [
     "codex",
     "claude",
