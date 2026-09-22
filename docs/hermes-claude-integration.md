@@ -1,5 +1,7 @@
 # Hermes: integración Claude Code + Codex
 
+> Flujo completo Telegram/Director -> Controller -> worker -> engines: docs/hermes-communication-architecture.md.
+
 ## Objetivo
 
 Hermes conserva la orquestación en el Controller y permite que cada tarea declare

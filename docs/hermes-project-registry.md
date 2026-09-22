@@ -1,5 +1,7 @@
 # Hermes project registry and task builder
 
+> Arquitectura end-to-end y flujo de comunicacion: docs/hermes-communication-architecture.md.
+
 Hermes projects are controller-owned manifests that describe how a repository may
 be executed without hard-coding project-specific paths in the Controller.
 
