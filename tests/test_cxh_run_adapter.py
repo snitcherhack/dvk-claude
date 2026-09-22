@@ -134,6 +134,7 @@ def test_codex_run_adapter_passes_task_scoped_allowed_paths(tmp_path, monkeypatc
     monkeypatch.setattr(adapters.subprocess, "Popen", lambda argv, **kw: (seen.append(argv) or Process(argv, **kw)))
     result = codex_adapter(tmp_path).execute(spec)
     assert result.status == "DONE"
+    assert any("codex-run.log" in item for item in result.evidence)
     argv = seen[0]
     allowed = [argv[index + 1] for index, value in enumerate(argv) if value == "--allowed-path"]
     assert allowed == [str(Path(spec["working_directory"]).resolve()), str((tmp_path / "brain").resolve())]

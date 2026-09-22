@@ -530,6 +530,9 @@ class ClaudeAgentAdapter:
 class CxhRunAdapter:
     """Controlled bridge to the existing cxh-run runner (never a shell bridge)."""
 
+    runner_name = "cxh-run"
+    log_filename = "cxh-run.log"
+
     def __init__(self, *, runner_path: str | os.PathLike[str], authorized_roots: list[str | os.PathLike[str]],
                  execution_profiles: set[str] | None = None, task_types: set[str] | None = None) -> None:
         self.runner_path = Path(runner_path).resolve()
@@ -555,12 +558,12 @@ class CxhRunAdapter:
         if not isinstance(allowed_values, list):
             raise AdapterExecutionError("BLOCKED", "allowed_paths must be a list")
         allowed_paths = [self._authorized(value, "allowed_paths") for value in allowed_values]
-        if not self.runner_path.is_file(): raise AdapterExecutionError("BLOCKED", "cxh-run is not available")
+        if not self.runner_path.is_file(): raise AdapterExecutionError("BLOCKED", f"{self.runner_name} is not available")
         if not (cwd / ".git").exists(): raise AdapterExecutionError("BLOCKED", "working_directory is not a Git repository")
         timeout = task.get("timeout_seconds", 1800)
         if not isinstance(timeout, int) or not 1 <= timeout <= 7200: raise AdapterExecutionError("BLOCKED", "invalid timeout_seconds")
         output.mkdir(parents=True, exist_ok=True)
-        log = output / "cxh-run.log"
+        log = output / self.log_filename
         argv = self._build_argv(
             task_type=task_type, cwd=cwd, task_file=task_file, output=output,
             profile=profile, timeout=timeout, allowed_paths=allowed_paths,
@@ -573,18 +576,18 @@ class CxhRunAdapter:
                     process.terminate()
                     try: process.wait(timeout=10)
                     except subprocess.TimeoutExpired: process.kill(); process.wait()
-                    raise AdapterExecutionError("FAILED", "cxh-run timed out", [str(log)])
+                    raise AdapterExecutionError("FAILED", f"{self.runner_name} timed out", [str(log)])
         except OSError as exc:
-            raise AdapterExecutionError("FAILED", f"could not start cxh-run: {exc}", [str(log)]) from exc
+            raise AdapterExecutionError("FAILED", f"could not start {self.runner_name}: {exc}", [str(log)]) from exc
         result_path = output / "result.json"
-        if not result_path.is_file(): raise AdapterExecutionError("FAILED", f"cxh-run exited {exit_code} without result.json", [str(log)])
+        if not result_path.is_file(): raise AdapterExecutionError("FAILED", f"{self.runner_name} exited {exit_code} without result.json", [str(log)])
         try: result = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc: raise AdapterExecutionError("FAILED", "invalid result.json", [str(log), str(result_path)]) from exc
         required = {"status", "summary", "gate", "completed", "remaining", "evidence"}
         if not isinstance(result, dict) or not required.issubset(result) or result["status"] not in {"DONE", "WAIT_USER", "BLOCKED", "FAILED"}:
             raise AdapterExecutionError("FAILED", "result.json violates Hermes result contract", [str(log), str(result_path)])
         if exit_code != 0 and result["status"] == "DONE":
-            raise AdapterExecutionError("FAILED", f"cxh-run exited {exit_code}", [str(log), str(result_path)])
+            raise AdapterExecutionError("FAILED", f"{self.runner_name} exited {exit_code}", [str(log), str(result_path)])
         evidence = [str(log), str(result_path), *[str(item) for item in result["evidence"]]]
         return AdapterResult(status=result["status"], summary=result["summary"], gate=result["gate"],
                              completed=result["completed"], remaining=result["remaining"], evidence=evidence)
@@ -608,6 +611,9 @@ class CxhRunAdapter:
 
 class CodexRunAdapter(CxhRunAdapter):
     """Project-agnostic Codex runner that receives task-scoped allowed paths."""
+
+    runner_name = "hermes-codex-run"
+    log_filename = "codex-run.log"
 
     def _build_argv(self, *, task_type: str, cwd: Path, task_file: Path, output: Path,
                     profile: str, timeout: int, allowed_paths: list[Path]) -> list[str]:
