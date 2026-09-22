@@ -398,6 +398,7 @@ class Controller:
             raise ControllerError(f"unknown job: {job_id}")
         runs = self.db.execute("SELECT run_id, attempt, worker_id, state, lease_expires_at FROM runs WHERE job_id=? ORDER BY attempt", (job_id,)).fetchall()
         task = json.loads(job["task_json"])
+        result, artifacts, hashes = self._latest_terminal_result(job_id)
         return {
             "job_id": job_id,
             "project": task["project"],
@@ -407,7 +408,40 @@ class Controller:
             "attempt": job["attempt"],
             "active_run_id": job["active_run_id"],
             "runs": [dict(row) for row in runs],
+            "result": result,
+            "artifacts": artifacts,
+            "hashes": hashes,
         }
+
+    def _latest_terminal_result(self, job_id: str) -> tuple[dict[str, Any] | None, list[Any], dict[str, Any]]:
+        """Return the normalized Hermes run-result payload for the latest
+        attempt that reached a terminal state, never the raw envelope.
+
+        Never expose lease_id, lease_token, worker credentials, or any
+        envelope field beyond the Hermes run-result contract and the
+        declared artifacts/hashes.
+        """
+        placeholders = ",".join("?" for _ in RESULT_STATUSES)
+        row = self.db.execute(
+            f"""SELECT result_json FROM runs
+                WHERE job_id=? AND state IN ({placeholders}) AND result_json IS NOT NULL
+                ORDER BY attempt DESC LIMIT 1""",
+            (job_id, *RESULT_STATUSES),
+        ).fetchone()
+        if row is None:
+            return None, [], {}
+        try:
+            envelope = json.loads(row["result_json"])
+            if not isinstance(envelope, dict):
+                return None, [], {}
+            self._validate_envelope(envelope)
+            payload = self._result_payload(envelope)
+        except (ControllerError, KeyError, TypeError, ValueError):
+            return None, [], {}
+        result = {key: payload[key] for key in ("status", "summary", "gate", "completed", "remaining", "evidence")}
+        artifacts = envelope.get("artifacts", [])
+        hashes = envelope.get("hashes", {})
+        return result, artifacts, hashes
 
     def events(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.db.execute("SELECT * FROM events ORDER BY event_id")]
@@ -564,6 +598,8 @@ class Controller:
         required = {"job_id", "run_id", "attempt", "worker_id", "lease_id", "lease_token", "started_at", "finished_at", "artifacts", "hashes"}
         if not required.issubset(envelope):
             raise ControllerError("invalid result envelope")
+        if not isinstance(envelope["artifacts"], list) or not isinstance(envelope["hashes"], dict):
+            raise ControllerError("invalid result artifacts or hashes")
         has_engine_result = "engine_result" in envelope
         has_legacy_result = "codex_result" in envelope
         if has_engine_result == has_legacy_result:

@@ -159,6 +159,41 @@ The project registry therefore does not grant arbitrary filesystem access: a
 project path must be inside both the worker maximum roots and the task's
 allowed-path scope.
 
+## Job status result contract
+
+`Controller.status(job_id)` preserves the job and run summary fields and adds a
+stable result surface for Director and gateway integrations:
+
+```json
+{
+  "result": {
+    "status": "DONE",
+    "summary": "Task completed",
+    "gate": null,
+    "completed": [],
+    "remaining": [],
+    "evidence": []
+  },
+  "artifacts": [],
+  "hashes": {}
+}
+```
+
+`result` is only the normalized Hermes payload shown above, whether the worker
+submitted a modern `engine_result` envelope or the legacy `codex_result`
+envelope. The raw envelope, lease identifiers/tokens, and worker credentials
+are never included in serialized status output. `artifacts` and `hashes` are
+exposed as separate top-level fields.
+
+Before any attempt reaches a terminal state, these fields are `result: null`,
+`artifacts: []`, and `hashes: {}`. If a job has multiple attempts, status uses
+the highest-numbered terminal attempt. Data attached to a stale or still
+running attempt is never promoted to `result`.
+
+If the latest terminal attempt contains malformed historical result data,
+status preserves the job/run summary but returns the empty result surface
+instead of failing the request or promoting an older terminal attempt.
+
 ## Human-gate contract
 
 `WAIT_USER` is fail-closed. A worker may return it only with a gate explicitly

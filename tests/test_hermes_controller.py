@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 
 import pytest
@@ -52,6 +53,23 @@ def test_a_enqueue_claim_heartbeat_done(core):
     assert controller.status(job)["state"] == "DONE"
 
 
+def test_status_has_empty_result_surface_before_terminal_result(core):
+    controller, _, _ = core
+    job = controller.enqueue(task())
+
+    queued = controller.status(job)
+    assert queued["result"] is None
+    assert queued["artifacts"] == []
+    assert queued["hashes"] == {}
+
+    controller.claim("main-linux")
+    running = controller.status(job)
+    assert running["state"] == "RUNNING"
+    assert running["result"] is None
+    assert running["artifacts"] == []
+    assert running["hashes"] == {}
+
+
 def test_engine_result_envelope_and_legacy_codex_result_are_both_supported(core):
     controller, _, _ = core
     modern_job = controller.enqueue(task())
@@ -59,13 +77,114 @@ def test_engine_result_envelope_and_legacy_codex_result_are_both_supported(core)
     modern = envelope(modern_claim)
     modern["engine"] = "codex"
     modern["engine_result"] = modern.pop("codex_result")
+    modern["engine_result"]["extension"] = "must not leak"
+    modern["artifacts"] = [{"path": "report.json"}]
+    modern["hashes"] = {"report.json": "sha256:abc"}
     controller.ingest_result(modern)
-    assert controller.status(modern_job)["state"] == "DONE"
+    modern_status = controller.status(modern_job)
+    assert modern_status["result"] == {
+        "status": "DONE",
+        "summary": "deterministic test",
+        "gate": None,
+        "completed": [],
+        "remaining": [],
+        "evidence": [],
+    }
+    assert modern_status["artifacts"] == [{"path": "report.json"}]
+    assert modern_status["hashes"] == {"report.json": "sha256:abc"}
+    serialized_status = json.dumps(modern_status)
+    assert modern["lease_token"] not in serialized_status
+    assert "lease_id" not in serialized_status
+    assert "lease_token" not in serialized_status
+    assert "engine_result" not in serialized_status
+    assert "codex_result" not in serialized_status
+    assert "extension" not in serialized_status
 
     legacy_job = controller.enqueue({**task(), "idempotency_key": "legacy-result-test"})
     legacy_claim = controller.claim("main-linux")
     controller.ingest_result(envelope(legacy_claim))
-    assert controller.status(legacy_job)["state"] == "DONE"
+    assert controller.status(legacy_job)["result"]["status"] == "DONE"
+
+
+def test_result_envelope_rejects_invalid_artifacts_and_hashes(core):
+    controller, _, _ = core
+    controller.enqueue(task())
+    claim = controller.claim("main-linux")
+    bad_artifacts = envelope(claim)
+    bad_artifacts["artifacts"] = {"path": "not-a-list"}
+    with pytest.raises(ControllerError, match="artifacts or hashes"):
+        controller.ingest_result(bad_artifacts)
+    bad_hashes = envelope(claim)
+    bad_hashes["hashes"] = ["not-a-dict"]
+    with pytest.raises(ControllerError, match="artifacts or hashes"):
+        controller.ingest_result(bad_hashes)
+
+
+def test_status_selects_newest_terminal_attempt_and_ignores_nonterminal_run_data(core):
+    controller, _, _ = core
+    job = controller.enqueue(task())
+    first_claim = controller.claim("main-linux")
+    first = envelope(first_claim, status="FAILED")
+    first["codex_result"]["summary"] = "first terminal"
+    controller.ingest_result(first)
+
+    controller.db.execute(
+        "UPDATE jobs SET state='QUEUED', active_run_id=NULL WHERE job_id=?",
+        (job,),
+    )
+    second_claim = controller.claim("main-linux")
+    nonterminal_envelope = envelope(second_claim, status="DONE")
+    nonterminal_envelope["codex_result"]["summary"] = "must stay hidden while running"
+    controller.db.execute(
+        "UPDATE runs SET result_json=? WHERE run_id=?",
+        (json.dumps(nonterminal_envelope, sort_keys=True), second_claim["run_id"]),
+    )
+
+    while_running = controller.status(job)
+    assert while_running["state"] == "RUNNING"
+    assert while_running["result"]["summary"] == "first terminal"
+
+    controller.db.execute(
+        "UPDATE runs SET state='STALE' WHERE run_id=?",
+        (second_claim["run_id"],),
+    )
+    controller.db.execute(
+        "UPDATE jobs SET state='QUEUED', active_run_id=NULL WHERE job_id=?",
+        (job,),
+    )
+    assert controller.status(job)["result"]["summary"] == "first terminal"
+
+    third_claim = controller.claim("main-linux")
+    third = envelope(third_claim, status="DONE")
+    third["codex_result"]["summary"] = "newest terminal"
+    controller.ingest_result(third)
+    terminal = controller.status(job)
+    assert terminal["result"]["summary"] == "newest terminal"
+
+
+def test_status_hides_malformed_latest_terminal_result_without_promoting_older_attempt(core):
+    controller, _, _ = core
+    job = controller.enqueue(task())
+    first_claim = controller.claim("main-linux")
+    controller.ingest_result(envelope(first_claim, status="FAILED"))
+
+    controller.db.execute(
+        "UPDATE jobs SET state='QUEUED', active_run_id=NULL WHERE job_id=?",
+        (job,),
+    )
+    second_claim = controller.claim("main-linux")
+    controller.db.execute(
+        "UPDATE runs SET state='DONE', result_json=? WHERE run_id=?",
+        ("not-json", second_claim["run_id"]),
+    )
+    controller.db.execute(
+        "UPDATE jobs SET state='DONE', active_run_id=NULL WHERE job_id=?",
+        (job,),
+    )
+    status = controller.status(job)
+    assert status["result"] is None
+    assert status["artifacts"] == []
+    assert status["hashes"] == {}
 
 
 def test_legacy_result_is_supported_for_native_worker(core):
