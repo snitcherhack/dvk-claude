@@ -69,6 +69,11 @@ def _validate_rubric(rubric: Any) -> None:
         raise ValueError("brainstorm rubric weights must sum to exactly 100")
 
 
+def validate_rubric(rubric: Any) -> None:
+    """Public rubric validator shared by the task contract and the brainstorm core."""
+    _validate_rubric(rubric)
+
+
 def validate_brainstorm_config(config: Any) -> None:
     """Validate a materialized brainstorm block; raise ValueError on any violation."""
     if not isinstance(config, dict) or set(config) != _CONFIG_FIELDS:

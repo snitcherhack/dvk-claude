@@ -466,6 +466,29 @@ El ranking no se presenta como consenso. El informe distingue acuerdo,
 divergencia, sesgo y cálculo determinista, y se puede reproducir a partir de
 los JSON guardados.
 
+### Implementación del núcleo (`hermes_controller/brainstorm_core.py`)
+
+- Código puro: sin filesystem, procesos, red, Controller, worker ni motores.
+  El texto de los modelos es dato opaco: se valida tipo y tamaño y se copia;
+  ninguna decisión depende de su contenido.
+- Aritmética exacta con `fractions.Fraction`. En el informe los números se
+  serializan como string exacto: decimal si termina en base 10 (`"74.5"`) y
+  `"n/d"` si no (por ejemplo una media de tres valores).
+- En las etapas de evaluación y validación, los scores son una lista de
+  `{criterion_id, score}` y no un objeto con claves dinámicas, para que el
+  schema de etapa sea estático.
+- IDs opacos `C01…Cnn` asignados ordenando por
+  `SHA-256(canonical_json([job_id, autor, propuesta]))`: reproducible,
+  independiente del orden de listas y claves y del `hash()` de Python.
+- Con una sola candidata no hay margen sobre la segunda: la confianza máxima
+  es `MEDIUM`. Sin candidatas, `LOW` e `INCONCLUSIVE`.
+- `self_preference` es `null` para un evaluador sin candidatas propias o sin
+  candidatas del otro motor. `self_preference_flag` se activa aunque la
+  confianza base ya sea `MEDIUM` o `LOW`; solo baja `HIGH` a `MEDIUM`.
+- Divergencias del informe: candidatas con `disagreement > 10` y criterios de
+  la ganadora con diferencia >= 3 puntos entre evaluadores.
+- `canonical_json`: claves ordenadas, sin espacios, UTF-8, sin NaN.
+
 ## Presupuesto de tiempo
 
 `timeout_seconds` del task es el presupuesto **global** del job, no el de cada
