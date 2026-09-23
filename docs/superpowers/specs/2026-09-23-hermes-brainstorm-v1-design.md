@@ -291,6 +291,79 @@ Si construir una raíz de filesystem allow-listed segura con `unshare` resulta
 compleja o frágil, el trabajo se detiene y se propone `bubblewrap`; su
 instalación requiere aprobación humana. Si ningún mecanismo satisface los
 siete puntos, las etapas Codex de Brainstorm permanecen `BLOCKED`.
+
+#### Resultado del Spike 5A (2026-09-24, `main-linux`)
+
+Entorno: `codex-cli 0.154.0` nativo
+(`~/.codex/packages/standalone/current/bin/codex`), sin instalar paquetes,
+layout desechable en `/tmp/hermes-codex-isolation-*` con canaries aleatorios.
+Ningún secreto se imprimió, copió ni hasheó; solo se comprobó accesibilidad.
+
+Hechos verificados:
+
+- Codex 0.154 implementa su sandbox Linux con un **`bwrap` incluido en su
+  propio paquete** (`codex-resources/bwrap`); sin `bwrap` en `PATH` avisa y usa
+  el incluido. No se instaló `bubblewrap` de sistema.
+- Con el sandbox `read-only` por defecto, las herramientas del agente **pueden
+  leer `~/.codex/auth.json`** y todos los canaries. No sirve para Brainstorm.
+- Un **permission profile** de Codex pasado solo por `-c` (sin tocar ficheros
+  de `~/.codex`) produce una vista allow-list para las herramientas:
+
+  ```text
+  -c 'default_permissions="bs"'
+  -c 'permissions.bs.filesystem={":minimal"="read",
+       "<home>/.codex/packages"="read", "<repo>"="read", "<stage>"="write"}'
+  ```
+
+  Resultado en las herramientas del agente (`codex sandbox` y `codex exec`
+  real): repo e input legibles; repo no escribible; stage escribible;
+  sibling stage, `orchestration/`, `outside/`, `~/Proyectos`, `~/.claude`,
+  `~/.ssh`, `~/.config/dvk-hermes`, `~/.local/state`, `~/.codex/sessions`,
+  `/mnt/c` y `/root` **no legibles**; `auth.json` **no legible**. `$HOME` y
+  `~/.codex` solo contienen el esqueleto de montaje hasta `packages`. `:minimal`
+  expone el runtime del sistema (`/usr`, `/etc`, `/bin`, `/lib*`) respetando
+  permisos Unix (`/etc/shadow` no legible).
+- La separación de autenticación la da la arquitectura de Codex: el proceso
+  principal (fuera del sandbox) lee la sesión de suscripción y llama al
+  modelo; las herramientas del agente corren en el sandbox restringido.
+- Red de las herramientas: namespace de red propio sin conectividad
+  (conexión TCP denegada) creado por el `bwrap` de Codex; no depende solo de
+  `network_access=false`.
+- Anidamiento: el sandbox de Codex funciona dentro de
+  `unshare --user --map-root-user --mount --pid --fork --mount-proc`, tanto con
+  `codex sandbox` como con `codex exec` real.
+- **Entorno**: en un `codex exec` real el agente vio una variable
+  `OUTER_TOKEN_CANARY` heredada; los filtros por defecto de Codex no la
+  eliminaron. Lanzando Codex con `env -i HOME=… PATH=… LANG=…` la variable no
+  es visible y la autenticación sigue funcionando. El worker real tiene su
+  token en el entorno, así que el runner Brainstorm **debe** lanzar Codex con
+  entorno limpio.
+- Structured output: `STAGE_SCHEMAS["proposals"]` se acepta tal cual con
+  `--output-schema`; exit 0, `result.json` presente y payload válido según
+  `validate_proposals(..., 2)`. No probados aún con Codex: `evaluation`,
+  `refinement`, `validation`.
+- `default_permissions` es incompatible con `sandbox_mode`: la ruta Brainstorm
+  no puede usar `--profile hermes` ni `--sandbox`.
+- Un network namespace externo (`unshare --net`) corta también al proceso
+  principal de Codex, que necesita red para el modelo; no es aplicable sin un
+  proxy de salida acotado.
+
+Limitaciones abiertas:
+
+- La sintaxis de permission profiles se determinó empíricamente para
+  `0.154.0`; debe tratarse como dependiente de versión.
+- El proceso principal de Codex persiste sesiones en `~/.codex/sessions`
+  (fuera del runtime de Hermes).
+- No se construyó una raíz allow-listed externa con `pivot_root`: el proceso
+  principal debe leer la autenticación y usar la red, así que una vista
+  externa no puede ocultarle ninguna de las dos.
+
+Recomendación del spike (pendiente de decisión humana): usar el permission
+profile de Codex (con su `bwrap` incluido) como mecanismo de aislamiento de las
+herramientas, lanzar Codex con entorno limpio, verificar en cada ejecución con
+una sonda de canaries sin modelo (`codex sandbox`) antes de la etapa y fallar
+cerrado si algo no coincide; `unshare` user/mount/pid externo como capa
+opcional.
 - El runner valida que cada ruta recibida esté dentro de los roots de la etapa.
 
 El orden Codex → Claude en proposals se mantiene por simplicidad y como defensa
