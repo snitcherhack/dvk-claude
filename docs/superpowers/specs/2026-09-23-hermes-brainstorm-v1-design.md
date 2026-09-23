@@ -206,21 +206,60 @@ Las etapas de evaluación nunca reciben las propuestas no anonimizadas.
   `Read`, `Glob` y `Grep`.
 - **Codex**: `--sandbox read-only` limita escrituras, pero **no** lecturas, y
   `--add-dir`/`allowed_paths` tampoco las restringen. El aislamiento de lectura
-  de Codex se implementa con un namespace de montaje por etapa: vista del
-  filesystem en la que `$HOME` se sustituye por un tmpfs y solo se re-montan
-  `~/.codex` (estado y autenticación del CLI), el runner y el binario,
-  `working_directory` read-only y el directorio de la etapa read-write. Todo lo
-  demás bajo `$HOME`, incluido el runtime de Hermes, deja de existir para el
-  proceso.
-  - Verificado en `main-linux`: los user/mount namespaces sin privilegios
-    funcionan (`unshare --user --mount`).
-  - Candidato de implementación: `bubblewrap` (no instalado; instalarlo
-    requiere aprobación humana). Alternativa sin paquete nuevo: `unshare`.
-  - Pendiente de verificar en la Fase 5: que el sandbox propio de Codex
-    funciona anidado dentro del namespace.
+  de Codex se implementa con un namespace de montaje por etapa cuya vista del
+  filesystem es allow-listed: todo lo que no se monte explícitamente no existe
+  para el proceso.
+  - Verificado en `main-linux`: Codex es un binario Linux nativo
+    (`codex-cli 0.154.0`) y los user/mount namespaces sin privilegios
+    funcionan (`unshare --user --mount --map-root-user`).
   - Fail-closed: si el aislamiento no está disponible o su autoverificación
     falla, las etapas Codex de Brainstorm terminan `BLOCKED`. No hay fallback
     sin aislamiento.
+
+#### Requisito de aislamiento de Codex
+
+Las herramientas del agente Codex **pueden** leer únicamente:
+
+- el `working_directory` autorizado, en modo read-only;
+- el `task.md` y el `input/` de su etapa.
+
+Y debe **verificarse** que **no** pueden leer:
+
+- `orchestration/`;
+- los directorios de etapa del otro motor;
+- otros jobs ni el runtime del proyecto;
+- otras rutas del usuario;
+- credenciales, sesiones o ficheros de autenticación de Codex;
+- la red.
+
+Montar `~/.codex` completo dentro del namespace **no** se considera aceptable:
+`read-only` impide escribir, pero no leer, y expondría la autenticación a las
+herramientas del agente. La forma de entregar autenticación al proceso CLI sin
+hacerla legible para las herramientas del agente es una incógnita abierta que
+resuelve el spike de la Fase 5.
+
+#### Spike de la Fase 5
+
+Se empieza con `unshare`, ya disponible. `bubblewrap` **no** se instala en
+este punto. El spike debe comprobar, sin imprimir ni registrar secretos:
+
+1. el sandbox propio de Codex funciona dentro del namespace;
+2. aislamiento real de lecturas: una ruta fuera de la allow-list no es legible
+   desde las herramientas del agente;
+3. aislamiento de credenciales: los ficheros de autenticación y sesiones de
+   Codex no son legibles desde las herramientas del agente;
+4. red deshabilitada;
+5. la autenticación OAuth/suscripción del CLI sigue funcionando;
+6. el repositorio es read-only;
+7. la salida de la etapa se escribe correctamente.
+
+Las pruebas de legibilidad usan ficheros centinela sin secretos o comprueban
+solo existencia/permiso de las rutas de autenticación, nunca su contenido.
+
+Si construir una raíz de filesystem allow-listed segura con `unshare` resulta
+compleja o frágil, el trabajo se detiene y se propone `bubblewrap`; su
+instalación requiere aprobación humana. Si ningún mecanismo satisface los
+siete puntos, las etapas Codex de Brainstorm permanecen `BLOCKED`.
 - El runner valida que cada ruta recibida esté dentro de los roots de la etapa.
 
 El orden Codex → Claude en proposals se mantiene por simplicidad y como defensa
@@ -606,8 +645,8 @@ git diff --check
 
 El E2E real requiere desplegar esta rama en el Controller de `hermes01` y en
 `main-linux` antes del merge, porque cambian Controller, builder y validación.
-Ese despliegue, y la instalación de `bubblewrap` si se elige, requieren
-aprobación humana explícita.
+Ese despliegue, y la instalación de `bubblewrap` si llegara a proponerse,
+requieren aprobación humana explícita.
 
 Secuencia:
 
@@ -621,6 +660,17 @@ Secuencia:
    huella idéntica.
 
 Solo entonces se documenta Brainstorm como operativo.
+
+### Documentación canónica antes del merge
+
+Antes del merge definitivo deben actualizarse:
+
+- `docs/hermes-communication-architecture.md`
+- `docs/hermes-project-registry.md`
+- `docs/hermes-claude-integration.md`
+
+Hasta superar el E2E distribuido, esos documentos describen Brainstorm como
+implementado/experimental o pendiente de E2E, nunca como operativo.
 
 ## Criterios de aceptación
 
@@ -653,10 +703,12 @@ propio; `balanced-v2` queda aplazado.
 3. Núcleo determinista sin I/O.
 4. Claude: perfil `brainstorm` y ejecución estructurada por etapa.
 5. Runner Codex: perfil `brainstorm`, `--stage-schema` y aislamiento por
-   namespace (spike y verificación incluidos).
+   namespace, empezando por el spike `unshare` y sus siete comprobaciones.
 6. `BrainstormAdapter`: layout, roots, baseline, huella, checkpoints,
    presupuesto y estados.
 7. Worker: `kind: brainstorm` y `main-linux.json` multi-engine.
 8. Integración local Controller + worker con motores falsos.
 9. Smoke real en `main-linux`.
 10. E2E distribuido con aprobación de despliegue.
+11. Actualización de los tres documentos canónicos (experimental hasta el E2E)
+    antes del merge.
