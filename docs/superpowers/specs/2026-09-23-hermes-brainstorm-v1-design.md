@@ -85,10 +85,18 @@ El snapshot mantiene los campos existentes y añade:
     "version": "brainstorm-v1",
     "candidate_count": 3,
     "rubric_id": "general-v1",
-    "rubric": []
+    "rubric": [
+      {"id": "value", "label": "Value", "description": "...", "weight": 25},
+      "... resto de criterios de general-v1 ..."
+    ]
   }
 }
 ```
+
+La rúbrica se **materializa completa** en el task snapshot, también cuando se
+usa `general-v1`. Un job encolado no depende de cambios posteriores de la
+rúbrica por defecto. `rubric_id` vale `general-v1` (el contenido debe coincidir
+exactamente con la rúbrica por defecto) o `custom`.
 
 `required_capabilities` contiene al menos `claude` y `codex`; el builder añade
 además las capabilities del proyecto, como hoy.
@@ -96,10 +104,16 @@ además las capabilities del proyecto, como hoy.
 ### Construcción por el task builder
 
 Hoy `build_project_task` toma `task_type` y `execution_profile` del manifest
-(`development`/`hermes`). Con `--engine brainstorm` el builder:
+(`development`/`hermes`). Con `--engine brainstorm` el builder fuerza, ignorando
+los valores del manifest:
 
-- fuerza `task_type=brainstorm` y `execution_profile=brainstorm`, ignorando los
-  valores del manifest;
+- `task_type=brainstorm`;
+- `execution_profile=brainstorm`;
+- `human_gates=[]`: la ideación es read-only y no cruza gates del proyecto;
+- `idempotency_policy=safe_retry`: la recuperación se apoya en checkpoints;
+
+y además:
+
 - inyecta el bloque `brainstorm` validado;
 - conserva `working_directory`, `runtime_directory`, `allowed_paths` y
   workspaces del proyecto como techo; el adapter reduce después el scope por
@@ -115,6 +129,23 @@ python3 -m hermes_controller --runtime-root /path/to/controller \
   [--candidates 2..6] [--rubric-file rubric.json] \
   --instruction-file question.md
 ```
+
+`--rubric-file` contiene un **array JSON de criterios**, cada uno con
+exactamente `id`, `label`, `description` y `weight`:
+
+```json
+[
+  {"id": "impact", "label": "Impact", "description": "Expected value.", "weight": 50},
+  {"id": "cost", "label": "Cost", "description": "Production cost.", "weight": 30},
+  {"id": "risk", "label": "Risk", "description": "Execution risk.", "weight": 20}
+]
+```
+
+Un array vacío equivale a `general-v1`. `--candidates` y `--rubric-file` solo
+se aceptan con `--engine brainstorm`.
+
+La validación del task exige además coherencia: `task_type=brainstorm` o un
+bloque `brainstorm` solo son válidos con `execution_engine=brainstorm`.
 
 ### Validación del manifest
 
@@ -645,6 +676,12 @@ git diff --check
 
 El E2E real requiere desplegar esta rama en el Controller de `hermes01` y en
 `main-linux` antes del merge, porque cambian Controller, builder y validación.
+
+**No se despliega el Controller de esta rama sin el worker compatible** (Fase 7).
+Con solo el Controller nuevo, un worker desplegado que anuncie `claude` y
+`codex` reclamaría un job Brainstorm, respondería `BLOCKED` por engine no
+configurado y enviaría el envelope como `codex`; el Controller lo rechazaría
+por engine distinto y el worker lo reintentaría indefinidamente.
 Ese despliegue, y la instalación de `bubblewrap` si llegara a proponerse,
 requieren aprobación humana explícita.
 
