@@ -328,6 +328,61 @@ distinto de `claude_smoke` reciba el aviso "Edits are allowed…". Reutiliza
 preparación, políticas de ruta, timeouts, SDK, `setting_sources=[]`,
 `skills=[]` y structured output, con el schema interno solicitado.
 
+#### API interna implementada (Fase 4)
+
+```python
+ClaudeAgentAdapter.execute_structured(
+    task, *, stage_schema: str, stage_roots: list[str], timeout_seconds: int,
+) -> StructuredExecutionResult          # stage, payload, evidence, metadata
+# errores: StructuredExecutionError(status BLOCKED|FAILED, stage, message, evidence)
+```
+
+- Argumentos solo por keyword y obligatorios.
+- `stage_schema` es un nombre resuelto únicamente desde
+  `brainstorm_core.STAGE_SCHEMAS` (copia profunda). Cualquier otro valor,
+  incluido un dict, termina `BLOCKED` sin llamar al modelo; los campos del task
+  no pueden aportar schema.
+- `stage_roots` son exactamente los roots visibles de la etapa, acotados por
+  los `authorized_roots` del adapter. `working_directory`, `brain.task_file` y
+  `run_output_dir` deben estar dentro de ellos. El hook `PreToolUse` y
+  `add_dirs` usan solo esos roots, y en el perfil `brainstorm` el hook deniega
+  además cualquier herramienta fuera de `Read`, `Glob`, `Grep`.
+- `timeout_seconds` es el presupuesto efectivo de la etapa; el
+  `timeout_seconds` del task no se usa en esta ruta.
+- El perfil y el `task_type` `brainstorm` deben estar habilitados
+  explícitamente en el adapter. `execute()` rechaza el perfil `brainstorm`.
+- Opciones SDK del perfil: `tools` y `allowed_tools` = `Read`, `Glob`,
+  `Grep`; `disallowed_tools` incluye `Write`, `Edit`, `MultiEdit`, `Bash`,
+  `WebFetch`, `WebSearch`, `NotebookEdit`, `Task`, `TodoWrite`;
+  `strict_mcp_config=True`, `setting_sources=[]`, `skills=[]`,
+  `permission_mode="dontAsk"`. Los perfiles `claude_smoke` y `hermes`
+  conservan exactamente sus opciones y prompts anteriores.
+- El payload se devuelve sin transformar y sin validación semántica, que
+  corresponde a `brainstorm_core` en el `BrainstormAdapter`. Errores del SDK,
+  timeout o salida que no sea un objeto JSON se devuelven como
+  `StructuredExecutionError`, nunca como resultado Hermes.
+- Cada etapa escribe `claude-structured.log` en su directorio con metadatos y
+  payload o error.
+
+#### Compatibilidad real de JSON Schema (smoke Fase 4)
+
+Verificado en `main-linux` con `claude-agent-sdk 0.2.156` y Claude Code CLI
+`2.1.267`, autenticación por suscripción (sin variables de proveedor externo),
+perfil `brainstorm`, repositorio desechable en `/tmp`:
+
+- Los cuatro `STAGE_SCHEMAS` completos se aceptan tal cual y producen payloads
+  que además superan la validación semántica de `brainstorm_core`.
+- Keywords/estructuras confirmadas: `additionalProperties: false`, objetos
+  anidados, arrays anidados (arrays de objetos con arrays dentro), `enum`,
+  `integer`, `required` en todos los niveles.
+- La restricción `tools=["Read","Glob","Grep"]` no impide la salida
+  estructurada.
+- El repositorio quedó con huella idéntica y los únicos ficheros nuevos fueron
+  los `claude-structured.log` escritos por Hermes en cada directorio de etapa.
+- No verificado todavía: `maxLength`, `maxItems`, `minItems` y otros límites
+  en el schema; siguen fuera de `STAGE_SCHEMAS` y los límites se aplican en la
+  validación semántica.
+
 ### Codex: perfil `brainstorm` del runner
 
 `hermes-codex-run.sh` añade:
