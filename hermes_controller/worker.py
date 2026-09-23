@@ -8,12 +8,14 @@ import json
 import os
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError, HTTPError
 from urllib.request import Request, urlopen
 
 from .adapters import AdapterResult, ClaudeAgentAdapter, CodexRunAdapter, CxhRunAdapter, EngineRoutingAdapter, ExecutionAdapter, HybridAdapter, MockAdapter
+from .artifacts import validate_artifacts
 
 
 class TransportError(RuntimeError): pass
@@ -199,7 +201,8 @@ class WorkerDaemon:
                 gate_name = result.gate or "<missing>"
                 evidence = list(result.evidence or [])
                 evidence.append(f"gate-policy: rejected undeclared WAIT_USER gate {gate_name}")
-                return AdapterResult(
+                return replace(
+                    result,
                     status="BLOCKED",
                     summary=f"adapter requested undeclared human gate: {gate_name}",
                     gate=None,
@@ -211,13 +214,35 @@ class WorkerDaemon:
         if result.gate is not None:
             evidence = list(result.evidence or [])
             evidence.append(f"gate-policy: ignored gate on {result.status}: {result.gate}")
-            return AdapterResult(
-                status=result.status,
-                summary=result.summary,
+            return replace(
+                result,
                 gate=None,
                 completed=list(result.completed or []),
                 remaining=list(result.remaining or []),
                 evidence=evidence,
+            )
+        return result
+
+    @staticmethod
+    def _normalize_artifacts(result: AdapterResult) -> AdapterResult:
+        # Validate locally so an adapter bug yields a terminal FAILED result
+        # instead of an envelope the Controller rejects and the worker retries.
+        try:
+            validate_artifacts(
+                [] if result.artifacts is None else result.artifacts,
+                {} if result.hashes is None else result.hashes,
+            )
+        except ValueError as exc:
+            evidence = list(result.evidence or [])
+            evidence.append(f"artifact-policy: rejected adapter artifacts: {exc}")
+            return replace(
+                result,
+                status="FAILED",
+                summary=f"adapter produced invalid artifacts: {result.summary}",
+                gate=None,
+                evidence=evidence,
+                artifacts=None,
+                hashes=None,
             )
         return result
 
@@ -265,9 +290,9 @@ class WorkerDaemon:
             return True
         if not result_box:
             raise RuntimeError("adapter did not return a result")
-        result = self._normalize_gate_result(result_box[0], claim["task"])
+        result = self._normalize_artifacts(self._normalize_gate_result(result_box[0], claim["task"]))
         now = time.time_ns() // 1_000_000
-        envelope = {**{key: claim[key] for key in ("job_id", "run_id", "attempt", "lease_id", "lease_token")}, "worker_id": self.worker["worker_id"], "started_at": now, "finished_at": now, "engine": self._execution_engine_for_task(claim["task"]), "engine_result": result.result(), "artifacts": [], "hashes": {}}
+        envelope = {**{key: claim[key] for key in ("job_id", "run_id", "attempt", "lease_id", "lease_token")}, "worker_id": self.worker["worker_id"], "started_at": now, "finished_at": now, "engine": self._execution_engine_for_task(claim["task"]), "engine_result": result.result(), "artifacts": list(result.artifacts or []), "hashes": dict(result.hashes or {})}
         self.pending_envelope = envelope; self._save_state(claim, envelope)
         try:
             self.client.ingest(envelope)

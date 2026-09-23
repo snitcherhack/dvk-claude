@@ -19,6 +19,10 @@ class AdapterResult:
     completed: list[str] | None = None
     remaining: list[str] | None = None
     evidence: list[str] | None = None
+    # Internal transport metadata copied by the worker into the envelope; never
+    # part of the public Hermes result returned by result().
+    artifacts: list[Any] | None = None
+    hashes: dict[str, Any] | None = None
 
     def result(self) -> dict[str, Any]:
         return {"status": self.status, "summary": self.summary, "gate": self.gate,

@@ -534,21 +534,48 @@ Ampliación mínima y backward-compatible de los elementos de `artifacts`:
 }
 ```
 
-- `path` es relativo a `run_output_dir`; nunca absoluto ni con `..`.
-- `sha256` y `bytes` son obligatorios en artefactos nuevos; `media_type` es
-  opcional.
-- `inline_text` es opcional, solo texto UTF-8 y como máximo 32 KiB (32768
-  bytes codificados). Sin binarios ni base64 en v1.
-- En Brainstorm v1 solo lleva `inline_text` el informe principal.
+Un artefacto es **enriquecido** si declara cualquiera de `sha256`, `bytes`,
+`media_type` o `inline_text`. Los demás elementos de `artifacts` (por ejemplo
+`{"path": "report.json"}`) son **legacy** y no se validan retroactivamente, ni
+tampoco sus entradas en `hashes`.
+
+Validación fail-closed de un artefacto enriquecido (`hermes_controller/artifacts.py`):
+
+- solo admite los campos `path`, `sha256`, `bytes`, `media_type`, `inline_text`;
+- `path` es relativo a `run_output_dir`, no vacío, sin NUL, sin barra inicial,
+  sin letra de unidad, sin backslashes, sin segmentos `..`, `.` ni vacíos;
+- `sha256` obligatorio: 64 caracteres hexadecimales en minúscula;
+- `bytes` obligatorio: entero >= 0;
+- `media_type` opcional: `tipo/subtipo`;
+- `inline_text` opcional: string UTF-8 codificable de como máximo 32768 bytes;
+- con `inline_text`, `bytes == len(inline_text.encode("utf-8"))` y
+  `sha256 == SHA-256(inline_text)`: el texto inline representa exactamente el
+  artefacto y nunca es una copia truncada;
+- `hashes[path]` debe existir y ser igual a `sha256`;
+- no puede haber dos artefactos enriquecidos con el mismo `path`.
+
+Reglas de transporte:
+
+- Sin binarios ni base64 inline en v1. En Brainstorm v1 solo lleva
+  `inline_text` el informe principal.
 - Si `brainstorm-report.md` supera 32 KiB, Hermes genera
-  `brainstorm-report.inline.md`, una versión resumida <= 32 KiB. Esa versión
-  se transporta inline y el informe completo se publica como artefacto normal
-  con hash, sin `inline_text`.
-- `hashes` mantiene el mapa `path -> sha256`.
-- El Controller sigue aceptando `artifacts` como lista arbitraria para
-  envelopes existentes; valida el formato nuevo solo en elementos que declaran
-  `inline_text`, y rechaza el envelope si `inline_text` excede el límite o no
-  es texto.
+  `brainstorm-report.inline.md`, una versión resumida <= 32 KiB con su propio
+  path y hash. Esa versión se transporta inline y el informe completo se
+  publica como artefacto enriquecido sin `inline_text`.
+- `hashes` mantiene el mapa `path -> hash`; los valores legacy (por ejemplo
+  `sha256:abc`) siguen aceptándose.
+- `AdapterResult` gana `artifacts` y `hashes` internos; `result()` conserva los
+  seis campos públicos. El worker los copia al envelope (por defecto `[]` y
+  `{}`) y los conserva al normalizar gates.
+- El worker valida los artefactos antes de enviarlos. Si son inválidos, el
+  resultado pasa a `FAILED` sin artefactos y con evidencia `artifact-policy`,
+  en lugar de enviar un envelope que el Controller rechazaría y el worker
+  reintentaría indefinidamente.
+- El Controller aplica la misma validación al ingerir y expone `artifacts` y
+  `hashes` en `status()` tal como los recibió. No almacena ficheros.
+- El JSON Schema publicado del envelope mantiene `artifacts` como array
+  genérico para no romper envelopes antiguos; las invariantes nuevas se aplican
+  en la validación semántica del Controller y del worker.
 
 Artefactos mínimos (bajo `orchestration/`):
 

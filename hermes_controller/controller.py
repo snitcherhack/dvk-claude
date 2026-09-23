@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .artifacts import validate_artifacts
 from .brainstorm_contract import build_brainstorm_config, validate_brainstorm_config
 from .clock import MonotonicClock
 from .engine_policy import EXPLICIT_ONLY_ENGINES, select_engine
@@ -652,6 +653,10 @@ class Controller:
             raise ControllerError("invalid result envelope")
         if not isinstance(envelope["artifacts"], list) or not isinstance(envelope["hashes"], dict):
             raise ControllerError("invalid result artifacts or hashes")
+        try:
+            validate_artifacts(envelope["artifacts"], envelope["hashes"])
+        except ValueError as exc:
+            raise ControllerError(f"invalid result artifact: {exc}") from exc
         has_engine_result = "engine_result" in envelope
         has_legacy_result = "codex_result" in envelope
         if has_engine_result == has_legacy_result:
