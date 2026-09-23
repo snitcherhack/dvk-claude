@@ -17,6 +17,9 @@ class EngineDecision:
 
 _BALANCED_POLICY = "balanced-v1"
 
+# Engines that may be allowed by a project but are never chosen automatically.
+EXPLICIT_ONLY_ENGINES = frozenset({"brainstorm"})
+
 _HYBRID_PHRASES = (
     "review",
     "code review",
@@ -131,6 +134,9 @@ def select_engine(
     allowed = list(dict.fromkeys(allowed_engines))
     if not allowed:
         raise ValueError("allowed_engines must not be empty")
+    allowed = [engine for engine in allowed if engine not in EXPLICIT_ONLY_ENGINES]
+    if not allowed:
+        raise ValueError("allowed_engines has no auto-selectable engine")
     if len(allowed) == 1:
         return EngineDecision(allowed[0], policy, "only_allowed_engine")
 

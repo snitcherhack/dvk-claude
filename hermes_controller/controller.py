@@ -12,13 +12,18 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .brainstorm_contract import build_brainstorm_config, validate_brainstorm_config
 from .clock import MonotonicClock
-from .engine_policy import select_engine
+from .engine_policy import EXPLICIT_ONLY_ENGINES, select_engine
 
 LEASE_DURATION_MS = 180_000
 WORKER_OFFLINE_MS = 90_000
 RESULT_STATUSES = {"DONE", "WAIT_USER", "BLOCKED", "FAILED"}
-ENGINE_CAPABILITIES = {"codex": {"codex"}, "claude": {"claude"}, "hybrid": {"codex", "claude"}, "native": set()}
+ENGINE_CAPABILITIES = {
+    "codex": {"codex"}, "claude": {"claude"}, "hybrid": {"codex", "claude"}, "native": set(),
+    "brainstorm": {"codex", "claude"},
+}
+BRAINSTORM_ENGINE = "brainstorm"
 
 
 class ControllerError(RuntimeError):
@@ -187,6 +192,8 @@ class Controller:
         engine: str | None = None,
         idempotency_key: str | None = None,
         workspaces: list[str] | None = None,
+        brainstorm_candidates: int | None = None,
+        brainstorm_rubric: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(instruction, str) or not instruction.strip():
             raise ControllerError("project task instruction is required")
@@ -216,6 +223,18 @@ class Controller:
                 "mode": "explicit" if engine is not None else "project-default",
                 "selected_engine": selected_engine,
             }
+
+        brainstorm_options = brainstorm_candidates is not None or brainstorm_rubric is not None
+        brainstorm_config: dict[str, Any] | None = None
+        if selected_engine == BRAINSTORM_ENGINE:
+            try:
+                brainstorm_config = build_brainstorm_config(
+                    candidate_count=brainstorm_candidates, rubric=brainstorm_rubric,
+                )
+            except ValueError as exc:
+                raise ControllerError(str(exc)) from exc
+        elif brainstorm_options:
+            raise ControllerError("brainstorm options require --engine brainstorm")
 
         requested_workspaces = list(dict.fromkeys(workspaces or []))
         declared_workspaces = manifest.get("workspaces", {})
@@ -269,6 +288,16 @@ class Controller:
             task["max_turns"] = manifest["max_turns"]
         if idempotency_key:
             task["idempotency_key"] = idempotency_key
+        if brainstorm_config is not None:
+            # Brainstorm is read-only ideation: it never crosses a project gate
+            # and always resumes safely from its own checkpoints.
+            task.update({
+                "task_type": BRAINSTORM_ENGINE,
+                "execution_profile": BRAINSTORM_ENGINE,
+                "human_gates": [],
+                "idempotency_policy": "safe_retry",
+                "brainstorm": brainstorm_config,
+            })
         self._validate_task(task)
         return task
 
@@ -504,9 +533,13 @@ class Controller:
         ):
             raise ControllerError("invalid allowed_engines")
         default_engine = manifest["default_engine"]
+        if default_engine in EXPLICIT_ONLY_ENGINES:
+            raise ControllerError(f"default_engine cannot be an explicit-only engine: {default_engine}")
         if default_engine == "auto":
             if manifest.get("engine_policy", "balanced-v1") != "balanced-v1":
                 raise ControllerError("unsupported engine_policy")
+            if all(engine in EXPLICIT_ONLY_ENGINES for engine in engines):
+                raise ControllerError("default_engine auto requires an auto-selectable engine")
         elif default_engine not in engines:
             raise ControllerError("default_engine must be allowed or auto")
         if manifest.get("engine_policy") is not None and manifest["engine_policy"] != "balanced-v1":
@@ -586,6 +619,25 @@ class Controller:
             capabilities = task.get("required_capabilities")
             if not isinstance(capabilities, list) or not ENGINE_CAPABILITIES[engine].issubset(capabilities):
                 raise ControllerError("execution_engine capabilities are missing")
+        Controller._validate_brainstorm_task(task)
+
+    @staticmethod
+    def _validate_brainstorm_task(task: dict[str, Any]) -> None:
+        is_brainstorm = task.get("execution_engine") == BRAINSTORM_ENGINE
+        if (task["task_type"] == BRAINSTORM_ENGINE) != is_brainstorm:
+            raise ControllerError("brainstorm task_type requires execution_engine brainstorm")
+        if not is_brainstorm:
+            if "brainstorm" in task:
+                raise ControllerError("brainstorm config requires execution_engine brainstorm")
+            return
+        if task["execution_profile"] != BRAINSTORM_ENGINE:
+            raise ControllerError("brainstorm execution_profile must be brainstorm")
+        if "brainstorm" not in task:
+            raise ControllerError("brainstorm config is required")
+        try:
+            validate_brainstorm_config(task["brainstorm"])
+        except ValueError as exc:
+            raise ControllerError(str(exc)) from exc
 
     @staticmethod
     def _result_payload(envelope: dict[str, Any]) -> dict[str, Any]:

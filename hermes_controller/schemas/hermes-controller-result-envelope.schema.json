@@ -12,7 +12,7 @@
     "lease_token": {"type": "string"},
     "started_at": {"type": "integer"},
     "finished_at": {"type": "integer"},
-    "engine": {"enum": ["codex", "claude", "hybrid", "native"]},
+    "engine": {"enum": ["codex", "claude", "hybrid", "native", "brainstorm"]},
     "engine_result": {"$ref": "../../hermes-run-result.schema.json"},
     "codex_result": {"$ref": "../../hermes-run-result.schema.json"},
     "artifacts": {"type": "array"},
