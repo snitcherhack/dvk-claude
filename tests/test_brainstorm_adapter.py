@@ -178,6 +178,17 @@ def test_done_recommended_runs_the_ten_stage_workflow(world):
     assert result.result()["status"] == "DONE"
 
 
+def test_refinement_request_states_all_semantic_output_limits(world):
+    run(world)
+    task_md = (world["run"] / "stages" / "codex-refinement" / "request" / "task.md").read_text(encoding="utf-8")
+    assert "title: at most 120 characters" in task_md
+    assert "concept: at most 4000 characters" in task_md
+    assert "pilot_definition: at most 2000 characters" in task_md
+    assert "success_criterion: at most 1000 characters" in task_md
+    assert "at most 10 items each" in task_md
+    assert "at most 500 characters" in task_md
+
+
 def test_done_inconclusive_when_validation_fails(world):
     world["claude"].verdict = "FAIL"
     result = run(world)

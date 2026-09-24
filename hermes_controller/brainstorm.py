@@ -733,7 +733,12 @@ class BrainstormAdapter:
         return (self._header("refinement", run.question)
                 + "## Task\n\nRefine the candidate in input/winner.json into a concrete pilot, taking into account "
                 "both independent critiques in input/critiques.json and the rubric in input/rubric.json. Keep the "
-                "same candidate_id; do not replace it with a different idea.\n")
+                "same candidate_id; do not replace it with a different idea.\n\n"
+                "## Hard output limits\n\n"
+                "title: at most 120 characters; concept: at most 4000 characters; "
+                "pilot_definition: at most 2000 characters; success_criterion: at most 1000 characters. "
+                "decisions_adopted, discarded_elements and accepted_risks: at most 10 items each, with each item "
+                "a non-empty string of at most 500 characters. These limits are mandatory.\n")
 
     def _validation_md(self, run: _Run) -> str:
         return (self._header("validation", run.question)
