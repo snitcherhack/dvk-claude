@@ -199,27 +199,58 @@ su etapa en modo read-only, pero no pueden ampliar el scope.
     brainstorm-report.json
     brainstorm-report.md
     brainstorm-report.inline.md     solo si el informe supera 32 KiB
-  stages/
-    codex-proposals/                task.md + salida del motor
-    claude-proposals/
-    claude-evaluation/              task.md + input/ preparado por Hermes
-    codex-evaluation/
-    <author>-refinement/
-    <validator>-validation/
+  stages/                           0700, solo Hermes
+    <motor>-<etapa>/                0700; nunca es root de un motor
+      request/                      0700; root de SOLO LECTURA para el motor
+        task.md                     0600, escrito por Hermes
+        input/                      0700
+          *.json                    0600, escritos por Hermes
+      executions/                   0700; nunca visible para un motor
+        call-0001/                  0700; root de ejecución de UNA llamada real
+        call-0002/                  llamada siguiente (reintento o nuevo intento)
 ```
+
+Etapas: `codex-proposals`, `claude-proposals`, `claude-evaluation`,
+`codex-evaluation`, `<autor>-refinement` y `<validador>-validation`.
+
+- `request/` lo escribe solo Hermes y contiene exactamente el `task.md` y los
+  inputs de la etapa: en cada ejecución se reescriben y cualquier fichero
+  sobrante de `input/` se elimina; un symlink o directorio inesperado allí es
+  `FAILED`. Es lo único que entra (con el task funcional y la pregunta) en
+  `input_sha256`.
+- Cada llamada real al modelo recibe un directorio nuevo y vacío
+  `executions/call-NNNN/` (siguiente índice libre, creado con `mkdir`
+  exclusivo), que es su `run_output_dir`. Un reintento semántico o un nuevo
+  intento del Controller usan otro `call-NNNN`; los anteriores se conservan
+  como evidencia interna, no se limpian y nunca se exponen. Reutilizar un
+  checkpoint no crea llamada ni directorio de ejecución.
+- Las rutas de ejecución no entran en `input_sha256`, en la identidad del
+  checkpoint ni en los artefactos; los logs de la llamada actual pueden ir a
+  `evidence`. Los directorios `.agents`, `.codex` y `.git` que crea el sandbox
+  de Codex quedan dentro del `call-NNNN` y son internos.
+- Un symlink en `request/`, `request/input/`, `executions/` o entre las
+  entradas de `executions/` es `FAILED` antes de llamar al modelo; nunca se
+  sigue ni se borra.
 
 ### Roots por etapa
 
-Cada etapa recibe exactamente:
+Cada llamada recibe exactamente, en este orden:
 
-- `working_directory` en modo read-only;
-- su directorio `stages/<stage>/`, que contiene su `task.md`, su `input/`
-  (si lo hay) y su salida.
+- `working_directory`, solo lectura;
+- workspaces seleccionados por el task, solo lectura (ordenados por nombre);
+- `stages/<etapa>/request/`, solo lectura;
+- `stages/<etapa>/executions/call-NNNN/`, el `run_output_dir` de la llamada.
+  Para Codex es el único root escribible; para Claude, cuyas herramientas son
+  `Read`/`Glob`/`Grep`, solo sirve para que el adapter escriba su log.
 
-Ninguna etapa recibe el `runtime_directory` del proyecto, el `run_output_dir`
-completo, `orchestration/`, el directorio de otra etapa, otros jobs ni los
-`allowed_paths`/workspaces extra del proyecto. Los workspaces opt-in del task
-pueden añadirse como read-only solo si el task los selecciona explícitamente.
+Nunca se entrega como root `stages/<etapa>/` completo, `executions/`, otras
+llamadas de la misma etapa, el `run_output_dir` del job, `orchestration/`, el
+directorio de otra etapa, otros jobs ni `allowed_paths` extra del proyecto. Para
+Codex, `brainstorm_probe.hidden_paths` añade `orchestration/`, el task file del
+job, los otros siete directorios de etapa y las llamadas anteriores de la misma
+etapa; la sonda `SKELETON` exige además que `stages/<etapa>/` solo muestre
+`request` y `executions`, y que `executions/` solo muestre la llamada actual
+(verificado con Codex real).
 
 | Etapa | Input preparado por Hermes |
 | --- | --- |
@@ -606,17 +637,20 @@ repo_fingerprint(working_directory) -> dict
   (con `input/`), todo 0700 con `chmod` explícito; ficheros Hermes 0600 escritos
   con `mkstemp` + `fsync` + `os.replace`, que sustituye sin seguir un symlink
   plantado. Un directorio Hermes que sea symlink es `FAILED`.
-- Cada etapa recibe un `task.md` nuevo y sus inputs en `input/`: proposals no
+- Cada etapa recibe un `request/task.md` nuevo y sus inputs en
+  `request/input/`, separados del `executions/call-NNNN/` escribible (ver
+  "Layout del runtime del job"): proposals no
   tiene inputs (pregunta, rúbrica y `candidate_count` van en `task.md`);
   evaluation recibe `candidates-anonymized.json` y `rubric.json` idénticos para
   ambos motores; refinement, `winner.json`, `critiques.json` (las dos críticas
   sin nombre de evaluador) y `rubric.json`; validation, `refined.json` y
   `rubric.json`. Ningún `task.md` ni input nombra motores ni autores.
-- Roots por etapa: `working_directory`, workspaces seleccionados (ordenados por
-  nombre) y el directorio de la etapa. Para Codex,
-  `brainstorm_probe.hidden_paths` incluye `orchestration/`, el task file del
-  run y los otros siete directorios de etapa posibles. Los stage tasks no
-  llevan `_hermes_runtime`.
+- Roots por llamada: `working_directory`, workspaces seleccionados (ordenados
+  por nombre), `request/` y el `executions/call-NNNN/` de esa llamada. Para
+  Codex, `brainstorm_probe.hidden_paths` incluye `orchestration/`, el task file
+  del run, los otros siete directorios de etapa posibles y las llamadas
+  anteriores de la etapa. Los stage tasks no llevan `_hermes_runtime`. El
+  bootstrap del runner de Codex apunta a los inputs junto a `task.md`.
 - `baseline.json`: `{"version": 1, "fingerprint": {"head", "status_sha256",
   "diff_sha256", "untracked": {ruta: sha256}}, "created_run_id",
   "created_attempt"}`. Se crea una vez; en cada ejecución se compara con el

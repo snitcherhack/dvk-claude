@@ -54,21 +54,26 @@ class FakeEngine:
         self.proposal_size = 1
 
     def execute_structured(self, task, *, stage_schema, stage_roots, timeout_seconds):
-        stage_dir = Path(task["run_output_dir"])
+        request_dir = Path(task["brain"]["task_file"]).parent
+        exec_dir = Path(task["run_output_dir"])
         self.log.append({"engine": self.name, "stage": stage_schema, "task": json.loads(json.dumps(task)),
-                         "roots": list(stage_roots), "timeout": timeout_seconds, "stage_dir": stage_dir})
+                         "roots": list(stage_roots), "timeout": timeout_seconds, "request_dir": request_dir,
+                         "exec_dir": exec_dir, "stage_root": request_dir.parent,
+                         "visible_before": sorted(p.name for p in exec_dir.iterdir())})
         self.clock.now += self.seconds_per_call
+        (exec_dir / "fake.log").write_text(f"{self.name} {stage_schema}\n", encoding="utf-8")
         if self.hook:
-            self.hook(self.name, stage_schema, stage_dir)
+            self.hook(self.name, stage_schema, exec_dir)
         queued = self.script.get(stage_schema)
         if queued:
             outcome = queued.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
             if outcome == "invalid":
+                (exec_dir / "invalid-output.json").write_text('{"unexpected": true}', encoding="utf-8")
                 return StructuredExecutionResult(stage=stage_schema, payload={"unexpected": True})
-        payload = getattr(self, f"_{stage_schema}")(stage_dir)
-        return StructuredExecutionResult(stage=stage_schema, payload=payload, evidence=[str(stage_dir / "fake.log")])
+        payload = getattr(self, f"_{stage_schema}")(request_dir)
+        return StructuredExecutionResult(stage=stage_schema, payload=payload, evidence=[str(exec_dir / "fake.log")])
 
     def _proposals(self, stage_dir: Path) -> dict:
         text = (stage_dir / "task.md").read_text(encoding="utf-8")
@@ -199,12 +204,15 @@ def test_layout_and_permissions_do_not_depend_on_umask(world):
         run(world)
     finally:
         os.umask(previous)
+    stage_roots = list((world["run"] / "stages").iterdir())
     for directory in [world["run"], orchestration(world), orchestration(world) / "checkpoints", world["run"] / "stages",
-                      *[p for p in (world["run"] / "stages").iterdir()],
-                      *[p / "input" for p in (world["run"] / "stages").iterdir()]]:
+                      *stage_roots, *[p / "request" for p in stage_roots], *[p / "request" / "input" for p in stage_roots],
+                      *[p / "executions" for p in stage_roots], *[c for p in stage_roots for c in (p / "executions").iterdir()]]:
         assert stat.S_IMODE(directory.stat().st_mode) == 0o700, directory
-    hermes_files = [*orchestration(world).rglob("*"), *(world["run"] / "stages").glob("*/task.md"),
-                    *(world["run"] / "stages").glob("*/input/*")]
+    for stage_root in stage_roots:
+        assert sorted(p.name for p in stage_root.iterdir()) == ["executions", "request"]
+    hermes_files = [*orchestration(world).rglob("*"), *(world["run"] / "stages").glob("*/request/task.md"),
+                    *(world["run"] / "stages").glob("*/request/input/*")]
     for path in hermes_files:
         if path.is_file():
             assert stat.S_IMODE(path.stat().st_mode) == 0o600, path
@@ -309,13 +317,12 @@ def test_codex_proposals_run_before_claude_and_stay_independent(world):
     proposals = [item for item in world["log"] if item["stage"] == "proposals"]
     assert [item["engine"] for item in proposals] == ["codex", "claude"]
     for item in proposals:
-        stage_dir = item["stage_dir"]
-        texts = [p.read_text(encoding="utf-8") for p in stage_dir.rglob("*") if p.is_file()
-                 and p.name != "fake.log"]
+        request_dir = item["request_dir"]
+        texts = [p.read_text(encoding="utf-8") for p in request_dir.rglob("*") if p.is_file()]
         other = "L" if item["engine"] == "codex" else "K"
         assert not any(f"Idea {other}" in text for text in texts)
-        assert QUESTION in (stage_dir / "task.md").read_text(encoding="utf-8")
-        assert item["roots"] == [str(world["repo"]), str(stage_dir)]
+        assert QUESTION in (request_dir / "task.md").read_text(encoding="utf-8")
+        assert item["roots"] == [str(world["repo"]), str(request_dir), str(item["exec_dir"])]
         assert "_hermes_runtime" not in item["task"]
 
 
@@ -324,9 +331,10 @@ def test_stage_roots_are_minimal_and_include_selected_workspaces(world):
     workspace.mkdir()
     run(world, selected_workspaces={"assets": str(workspace)})
     for item in world["log"]:
-        assert item["roots"] == [str(world["repo"]), str(workspace), str(item["stage_dir"])]
+        assert item["roots"] == [str(world["repo"]), str(workspace), str(item["request_dir"]), str(item["exec_dir"])]
         assert str(world["run"]) not in item["roots"]
         assert str(orchestration(world)) not in item["roots"]
+        assert str(item["stage_root"]) not in item["roots"]
 
 
 def test_codex_hidden_paths_cover_orchestration_and_siblings(world):
@@ -337,34 +345,33 @@ def test_codex_hidden_paths_cover_orchestration_and_siblings(world):
         hidden = set(item["task"]["brainstorm_probe"]["hidden_paths"])
         assert str(orchestration(world)) in hidden
         assert str(world["run"] / "hermes-task.md") in hidden
-        siblings = {str(p) for p in (world["run"] / "stages").iterdir() if p != item["stage_dir"]}
+        siblings = {str(p) for p in (world["run"] / "stages").iterdir() if p != item["stage_root"]}
         assert siblings <= hidden
-        assert str(item["stage_dir"]) not in hidden
+        assert not {str(item["stage_root"]), str(item["request_dir"]), str(item["exec_dir"])} & hidden
 
 
 def test_both_evaluators_receive_the_same_bundle_without_authors(world):
     run(world)
     evaluations = [item for item in world["log"] if item["stage"] == "evaluation"]
-    bundles = [(item["stage_dir"] / "input" / "candidates-anonymized.json").read_bytes() for item in evaluations]
+    bundles = [(item["request_dir"] / "input" / "candidates-anonymized.json").read_bytes() for item in evaluations]
     assert bundles[0] == bundles[1]
     for item in evaluations:
-        texts = " ".join(p.read_text(encoding="utf-8") for p in item["stage_dir"].rglob("*")
-                         if p.is_file() and p.name != "fake.log").lower()
+        texts = " ".join(p.read_text(encoding="utf-8") for p in item["request_dir"].rglob("*") if p.is_file()).lower()
         assert "claude" not in texts and "codex" not in texts and "author" not in texts
-        assert {p.name for p in (item["stage_dir"] / "input").iterdir()} == {"candidates-anonymized.json", "rubric.json"}
+        assert {p.name for p in (item["request_dir"] / "input").iterdir()} == {"candidates-anonymized.json", "rubric.json"}
 
 
 def test_refinement_and_validation_inputs(world):
     run(world)
     refine = next(item for item in world["log"] if item["stage"] == "refinement")
-    names = {p.name for p in (refine["stage_dir"] / "input").iterdir()}
+    names = {p.name for p in (refine["request_dir"] / "input").iterdir()}
     assert names == {"winner.json", "critiques.json", "rubric.json"}
-    critiques = json.loads((refine["stage_dir"] / "input" / "critiques.json").read_text())
+    critiques = json.loads((refine["request_dir"] / "input" / "critiques.json").read_text())
     assert len(critiques) == 2
-    text = " ".join(p.read_text(encoding="utf-8") for p in (refine["stage_dir"] / "input").iterdir()).lower()
+    text = " ".join(p.read_text(encoding="utf-8") for p in (refine["request_dir"] / "input").iterdir()).lower()
     assert "author" not in text and "claude" not in text and "codex" not in text
     validate = next(item for item in world["log"] if item["stage"] == "validation")
-    assert {p.name for p in (validate["stage_dir"] / "input").iterdir()} == {"refined.json", "rubric.json"}
+    assert {p.name for p in (validate["request_dir"] / "input").iterdir()} == {"refined.json", "rubric.json"}
 
 
 # --- retries ----------------------------------------------------------------------------------------------------------
@@ -585,3 +592,100 @@ def test_never_returns_wait_user(world):
     world["claude"].verdict = "FAIL"
     statuses = {run(world).status}
     assert "WAIT_USER" not in statuses
+
+
+# --- request (read-only) vs execution (read-write) separation ------------------------------------------------
+
+def test_codex_writable_root_is_a_fresh_execution_root_not_the_request(world):
+    run(world)
+    for item in world["log"]:
+        output = Path(item["task"]["run_output_dir"])
+        assert output == item["exec_dir"] and output.parent.name == "executions"
+        assert output != item["request_dir"]
+        assert item["request_dir"] not in output.parents and output not in item["request_dir"].parents
+        assert item["roots"][-1] == str(output) and str(item["request_dir"]) in item["roots"]
+
+
+def test_task_and_inputs_are_not_under_the_execution_root(world):
+    run(world)
+    for item in world["log"]:
+        task_file = Path(item["task"]["brain"]["task_file"])
+        assert task_file == item["request_dir"] / "task.md"
+        assert item["exec_dir"] not in task_file.parents
+        assert item["exec_dir"] not in (item["request_dir"] / "input").parents
+
+
+def test_writes_in_the_execution_root_cannot_touch_the_request(world):
+    def tamper(_engine, _stage, exec_dir):
+        (exec_dir / "task.md").write_text("tampered", encoding="utf-8")
+        (exec_dir / "input").mkdir()
+        (exec_dir / "input" / "candidates-anonymized.json").write_text("[]", encoding="utf-8")
+    world["codex"].hook = tamper
+    assert run(world).status == "DONE"
+    for item in world["log"]:
+        assert "tampered" not in (item["request_dir"] / "task.md").read_text(encoding="utf-8")
+    evaluation = next(item for item in world["log"] if item["engine"] == "codex" and item["stage"] == "evaluation")
+    assert json.loads((evaluation["request_dir"] / "input" / "candidates-anonymized.json").read_text()) != []
+
+
+def test_semantic_retry_gets_a_new_execution_root_without_previous_files(world):
+    world["codex"].script["proposals"] = ["invalid"]
+    assert run(world).status == "DONE"
+    first, second = [item for item in world["log"] if item["engine"] == "codex" and item["stage"] == "proposals"]
+    assert first["exec_dir"] != second["exec_dir"]
+    assert (first["exec_dir"].name, second["exec_dir"].name) == ("call-0001", "call-0002")
+    assert second["visible_before"] == []
+    assert str(first["exec_dir"]) not in second["roots"]
+    assert str(first["exec_dir"]) in second["task"]["brainstorm_probe"]["hidden_paths"]
+    assert (first["exec_dir"] / "invalid-output.json").is_file()   # kept as internal evidence, never exposed
+
+
+def test_new_controller_attempt_without_checkpoint_uses_a_new_execution_root(world):
+    world["claude"].script["evaluation"] = [StructuredExecutionError("FAILED", "evaluation", "crash")]
+    run(world)
+    run(world, run_id="run-2", attempt=2)
+    roots = [item["exec_dir"].name for item in world["log"] if item["engine"] == "claude" and item["stage"] == "evaluation"]
+    assert roots == ["call-0001", "call-0002"]
+
+
+def test_checkpoint_reuse_creates_no_call_and_no_execution_root(world):
+    run(world)
+    before = sorted(str(p) for p in (world["run"] / "stages").glob("*/executions/*"))
+    calls_before = len(world["log"])
+    run(world, run_id="run-2", attempt=2)
+    assert len(world["log"]) == calls_before
+    assert sorted(str(p) for p in (world["run"] / "stages").glob("*/executions/*")) == before
+
+
+def test_input_sha256_does_not_depend_on_the_execution_root(world):
+    run(world)
+    checkpoint = orchestration(world) / "checkpoints" / "codex-proposals.json"
+    original = json.loads(checkpoint.read_text())["input_sha256"]
+    checkpoint.unlink()
+    before = len(world["log"])
+    assert run(world, run_id="run-2", attempt=2).status == "DONE"
+    assert calls(world, before) == [("codex", "proposals")]
+    assert world["log"][-1]["exec_dir"].name == "call-0002"
+    assert json.loads(checkpoint.read_text())["input_sha256"] == original
+
+
+def test_previous_execution_outputs_never_become_artifacts(world):
+    world["codex"].script["proposals"] = ["invalid"]
+    result = run(world)
+    assert all(item["path"].startswith("orchestration/") for item in result.artifacts)
+    assert not any("executions" in path or "invalid-output" in path for path in result.hashes)
+
+
+@pytest.mark.parametrize("planted", ["request", "request/input", "executions", "executions/call-0001"])
+def test_symlinks_in_request_or_execution_layout_fail_closed(world, planted):
+    stage_root = world["run"] / "stages" / "codex-proposals"
+    target = world["tmp"] / "elsewhere"
+    target.mkdir()
+    link = stage_root / planted
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target, target_is_directory=True)
+    result = run(world)
+    assert result.status == "FAILED"
+    assert calls(world) == []
+    assert list(target.iterdir()) == []
+    assert link.is_symlink()
