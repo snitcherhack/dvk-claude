@@ -23,6 +23,8 @@ TIMEOUT_SECONDS=""
 DRY_RUN=0
 ALLOWED_PATHS=()
 PASSTHROUGH_ARGS=()
+STAGE_SCHEMA=""
+PROBE_HIDDEN=()
 
 usage() {
     cat <<'EOF'
@@ -36,6 +38,9 @@ Opciones:
   --allowed-path RUTA        Puede repetirse
   --execution-profile PERFIL
   --timeout-seconds SEGUNDOS
+  --stage-schema NOMBRE      Solo con --execution-profile brainstorm:
+                             proposals|evaluation|refinement|validation
+  --probe-hidden RUTA        Solo brainstorm; ruta que la sonda exige invisible
   --dry-run
   -h, --help
 EOF
@@ -51,11 +56,62 @@ while (( $# )); do
         --allowed-path) ALLOWED_PATHS+=("${2:?--allowed-path requiere valor}"); shift ;;
         --execution-profile) EXECUTION_PROFILE="${2:?--execution-profile requiere valor}"; shift ;;
         --timeout-seconds) TIMEOUT_SECONDS="${2:?--timeout-seconds requiere valor}"; shift ;;
+        --stage-schema) STAGE_SCHEMA="${2:?--stage-schema requiere valor}"; shift ;;
+        --probe-hidden) PROBE_HIDDEN+=("${2:?--probe-hidden requiere valor}"); shift ;;
         --dry-run) DRY_RUN=1 ;;
         *) PASSTHROUGH_ARGS+=("$1") ;;
     esac
     shift
 done
+
+realpath_within() {
+    local candidate root
+    candidate="$(realpath -m "$1")"
+    root="$(realpath -m "$2")"
+    [[ "$candidate" == "$root" || "$candidate" == "$root"/* ]]
+}
+
+LOCK_DIR="$STATE_DIR/hermes-codex-run.lock"
+
+acquire_lock() {
+    if mkdir "$LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" > "$LOCK_DIR/pid"
+        return 0
+    fi
+    local owner_pid=""
+    if [[ -f "$LOCK_DIR/pid" ]]; then
+        owner_pid="$(<"$LOCK_DIR/pid")"
+    fi
+    if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+        echo "ERROR: Hermes Codex ya tiene una ejecución activa" >&2
+        exit 1
+    fi
+    rm -f "$LOCK_DIR/pid"
+    rmdir "$LOCK_DIR" 2>/dev/null || {
+        echo "ERROR: no se pudo recuperar el lock de Hermes Codex" >&2
+        exit 1
+    }
+    mkdir "$LOCK_DIR"
+    printf '%s\n' "$$" > "$LOCK_DIR/pid"
+}
+
+release_lock() {
+    if [[ -d "$LOCK_DIR" && -f "$LOCK_DIR/pid" ]] && [[ "$(<"$LOCK_DIR/pid")" == "$$" ]]; then
+        rm -f "$LOCK_DIR/pid"
+        rmdir "$LOCK_DIR" 2>/dev/null || true
+    fi
+}
+
+if [[ "$EXECUTION_PROFILE" == "brainstorm" ]]; then
+    # shellcheck source=hermes-codex-brainstorm.sh
+    source "$SCRIPT_DIR/hermes-codex-brainstorm.sh"
+    run_brainstorm_stage
+    exit $?
+fi
+if [[ -n "$STAGE_SCHEMA" || ${#PROBE_HIDDEN[@]} -gt 0 ]]; then
+    echo "ERROR: --stage-schema y --probe-hidden solo se aceptan con --execution-profile brainstorm" >&2
+    exit 2
+fi
 
 if [[ "$EXECUTION_PROFILE" != "hermes" && "$EXECUTION_PROFILE" != "review" ]]; then
     echo "ERROR: execution profile no permitido: $EXECUTION_PROFILE" >&2
@@ -94,13 +150,6 @@ if (( SMOKE_TEST )) && (( ${#PASSTHROUGH_ARGS[@]} > 0 )); then
     exit 2
 fi
 
-realpath_within() {
-    local candidate root
-    candidate="$(realpath -m "$1")"
-    root="$(realpath -m "$2")"
-    [[ "$candidate" == "$root" || "$candidate" == "$root"/* ]]
-}
-
 if (( ${#ALLOWED_PATHS[@]} == 0 )); then
     echo "ERROR: se requiere al menos un --allowed-path" >&2
     exit 2
@@ -119,37 +168,6 @@ for required_path in "$WORKING_DIRECTORY" "$TASK_FILE" "$RUN_OUTPUT_DIR"; do
         exit 2
     fi
 done
-
-LOCK_DIR="$STATE_DIR/hermes-codex-run.lock"
-
-acquire_lock() {
-    if mkdir "$LOCK_DIR" 2>/dev/null; then
-        printf '%s\n' "$$" > "$LOCK_DIR/pid"
-        return 0
-    fi
-    local owner_pid=""
-    if [[ -f "$LOCK_DIR/pid" ]]; then
-        owner_pid="$(<"$LOCK_DIR/pid")"
-    fi
-    if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
-        echo "ERROR: Hermes Codex ya tiene una ejecución activa" >&2
-        exit 1
-    fi
-    rm -f "$LOCK_DIR/pid"
-    rmdir "$LOCK_DIR" 2>/dev/null || {
-        echo "ERROR: no se pudo recuperar el lock de Hermes Codex" >&2
-        exit 1
-    }
-    mkdir "$LOCK_DIR"
-    printf '%s\n' "$$" > "$LOCK_DIR/pid"
-}
-
-release_lock() {
-    if [[ -d "$LOCK_DIR" && -f "$LOCK_DIR/pid" ]] && [[ "$(<"$LOCK_DIR/pid")" == "$$" ]]; then
-        rm -f "$LOCK_DIR/pid"
-        rmdir "$LOCK_DIR" 2>/dev/null || true
-    fi
-}
 
 if (( DRY_RUN )); then
     echo "cwd: $WORKING_DIRECTORY"

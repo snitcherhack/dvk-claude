@@ -1,0 +1,65 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "proposals": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "audience_flow": {
+            "type": "string"
+          },
+          "concept": {
+            "type": "string"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "execution_plan": {
+            "type": "string"
+          },
+          "hook": {
+            "type": "string"
+          },
+          "minimum_pilot": {
+            "type": "string"
+          },
+          "risks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "concept",
+          "hook",
+          "audience_flow",
+          "execution_plan",
+          "dependencies",
+          "assumptions",
+          "risks",
+          "minimum_pilot"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "proposals"
+  ],
+  "type": "object"
+}

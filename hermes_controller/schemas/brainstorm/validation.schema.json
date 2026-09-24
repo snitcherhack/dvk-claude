@@ -1,0 +1,47 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "candidate_id": {
+      "type": "string"
+    },
+    "material_findings": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "scores": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "criterion_id": {
+            "type": "string"
+          },
+          "score": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "criterion_id",
+          "score"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "verdict": {
+      "enum": [
+        "PASS",
+        "FAIL"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "verdict",
+    "material_findings",
+    "scores"
+  ],
+  "type": "object"
+}

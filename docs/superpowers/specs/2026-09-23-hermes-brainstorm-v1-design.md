@@ -353,7 +353,8 @@ Limitaciones abiertas:
 - La sintaxis de permission profiles se determinó empíricamente para
   `0.154.0`; debe tratarse como dependiente de versión.
 - El proceso principal de Codex persiste sesiones en `~/.codex/sessions`
-  (fuera del runtime de Hermes).
+  (fuera del runtime de Hermes). Resuelto en la Fase 5B con `codex exec
+  --ephemeral`: 0 ficheros nuevos en el smoke real.
 - No se construyó una raíz allow-listed externa con `pivot_root`: el proceso
   principal debe leer la autenticación y usar la red, así que una vista
   externa no puede ocultarle ninguna de las dos.
@@ -471,6 +472,78 @@ perfil `brainstorm`, repositorio desechable en `/tmp`:
 
 `CodexRunAdapter` gana una ruta estructurada separada; su `execute()` actual no
 cambia.
+
+#### Implementación (Fase 5B)
+
+Mecanismo aprobado tras el Spike 5A: permission profile nativo de Codex con
+su `bwrap` integrado, entorno limpio con `env -i` y sonda sin modelo antes de
+cada etapa. No se instala `bubblewrap` de sistema y no se envuelve el proceso
+principal de Codex en un network namespace.
+
+- API: `CodexRunAdapter.execute_structured(task, *, stage_schema, stage_roots,
+  timeout_seconds) -> StructuredExecutionResult`, idéntica a la de Claude.
+  `execute()` rechaza el perfil `brainstorm`; `hermes` y `review` no cambian.
+- `run_output_dir` debe ser exactamente uno de los `stage_roots` (el único
+  escribible); `working_directory` y `brain.task_file` deben estar dentro.
+  `brainstorm_probe.hidden_paths` (opcional, del task construido por Hermes)
+  solo endurece la sonda.
+- Runner: `hermes-codex-run.sh --execution-profile brainstorm` carga
+  `hermes-codex-brainstorm.sh`. Solo acepta `--stage-schema
+  proposals|evaluation|refinement|validation`, resuelto a
+  `hermes_controller/schemas/brainstorm/<nombre>.schema.json`; cualquier otro
+  valor sale con código 2 sin tocar Codex. Rechaza rutas con comillas,
+  backslashes o caracteres de control, roots que contengan o estén dentro de
+  `CODEX_HOME`, y un binario de Codex fuera de `CODEX_HOME/packages`.
+- Schemas (estrategia A): cuatro JSON versionados y un test de igualdad
+  canónica con `brainstorm_core.STAGE_SCHEMAS`.
+- Permission profile efímero, solo por `-c`:
+  `default_permissions="hermes_brainstorm"` y
+  `permissions.hermes_brainstorm.filesystem={":minimal"="read",
+  "<CODEX_HOME>/packages"="read", <roots de lectura>="read", "<stage>"="write"}`.
+  No se modifica `~/.codex/config.toml`.
+- Entorno: el adapter lanza el runner con una allow-list positiva (`HOME`,
+  `PATH`, `LANG`, `HERMES_CODEX_CLI`, `CODEX_HOME`, `XDG_STATE_HOME` y
+  variables de proxy). El runner lanza Codex con `env -i` y solo `HOME`,
+  `PATH=/usr/bin:/bin`, `LANG=C.UTF-8`, `CODEX_HOME` si existe y las variables
+  de proxy (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `ALL_PROXY` y minúsculas)
+  si existen; un proxy con credenciales (`@`) bloquea la etapa. No se registran
+  valores.
+- Sonda sin modelo con el mismo array de permisos que `exec`: `READ` y
+  `NOWRITE` por root de lectura, `RW` del stage, `NET` (TCP saliente
+  denegado), `ENV` (ningún nombre de variable tipo token/secret/key/auth/
+  session/cookie/credential), `HIDDEN` para `auth.json`, `sessions`, `~/.ssh`,
+  `~/.claude`, `~/.config/dvk-hermes`, `/mnt/c`, un canary privado del runner y
+  los `hidden_paths` del task, y `SKELETON`: cada ancestro de una ruta visible
+  solo puede mostrar el siguiente componente hacia ella. Si falla, código 3,
+  `isolation-probe.json` con `FAIL` y el modelo no se invoca.
+- `codex sandbox -C` exige `--permission-profile`, que Codex no permite junto a
+  `default_permissions`; la sonda se ejecuta desde el directorio de trabajo sin
+  `-C` para usar exactamente el mismo perfil que el modelo.
+- Ejecución: `codex exec --ephemeral --ignore-user-config --ignore-rules
+  --strict-config -C <wd> -c approval_policy="never" <perfil> --output-schema
+  <schema versionado> --output-last-message <directorio privado>`; sin
+  `--profile hermes` ni `--sandbox`. El timeout efectivo cubre sonda (máximo
+  60 s) y modelo; el adapter añade 30 s de margen solo para matar el runner.
+- Resultado y log se escriben primero en un directorio privado del runner y se
+  publican en el stage con `mktemp` + `rename`, que reemplaza sin seguir un
+  symlink plantado por el agente. El adapter lee con `O_NOFOLLOW`.
+  Códigos del runner: 0 ok, 1 fallo de Codex, 2 argumentos/configuración,
+  3 sonda fallida, 4 salida no es objeto JSON, 124 presupuesto agotado.
+
+Resultado real en `main-linux` (`codex-cli 0.154.0`, repo desechable en
+`/tmp`): las cuatro etapas terminan con la sonda en `PASS` (23 comprobaciones
+cada una), payload aceptado con los cuatro schemas versionados tal cual y
+validación semántica correcta (`validate_proposals`, `validate_evaluation`,
+`validate_refinement`, `validate_validation`, veredicto `PASS`); ningún canary
+de sibling, `orchestration/`, `outside/` ni del repo aparece en salida ni log;
+repo con huella idéntica; **0 ficheros nuevos en `~/.codex/sessions`** gracias
+a `--ephemeral`. Control negativo: el check `ENV` falla con una variable
+canary heredada y pasa con `env -i`. El agente ignoró instrucciones del task
+que le pedían sondear rutas fuera de su scope, conforme al bootstrap.
+
+Observación: el sandbox de Codex crea en el stage los directorios vacíos
+`.agents`, `.codex` y `.git` como puntos de montaje protegidos. Son inocuos;
+la Fase 6 debe ignorarlos.
 
 ### Artefactos del adapter
 

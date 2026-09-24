@@ -1,0 +1,49 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "accepted_risks": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "candidate_id": {
+      "type": "string"
+    },
+    "concept": {
+      "type": "string"
+    },
+    "decisions_adopted": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "discarded_elements": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "pilot_definition": {
+      "type": "string"
+    },
+    "success_criterion": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "candidate_id",
+    "title",
+    "concept",
+    "pilot_definition",
+    "success_criterion",
+    "decisions_adopted",
+    "discarded_elements",
+    "accepted_risks"
+  ],
+  "type": "object"
+}

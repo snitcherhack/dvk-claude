@@ -713,6 +713,8 @@ class CxhRunAdapter:
             return AdapterResult(status=exc.status, summary=str(exc), evidence=exc.evidence)
 
     def _execute(self, task: dict[str, Any]) -> AdapterResult:
+        if task.get("execution_profile") == "brainstorm":
+            raise AdapterExecutionError("BLOCKED", "brainstorm profile is only available through execute_structured")
         task_type = task.get("task_type")
         if task_type not in self.task_types: raise AdapterExecutionError("BLOCKED", "task_type is not allowed")
         profile = task.get("execution_profile")
@@ -780,6 +782,138 @@ class CodexRunAdapter(CxhRunAdapter):
 
     runner_name = "hermes-codex-run"
     log_filename = "codex-run.log"
+    BRAINSTORM_PROFILE = "brainstorm"
+    STRUCTURED_RESULT = "codex-structured.json"
+    PROBE_REPORT = "isolation-probe.json"
+    EXEC_LOG = "codex-exec.log"
+    # Positive allow-list for the runner process; the runner applies its own
+    # narrower env -i list to Codex. Values are never logged.
+    RUNNER_ENV = ("HOME", "PATH", "LANG", "HERMES_CODEX_CLI", "CODEX_HOME", "XDG_STATE_HOME",
+                  "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "ALL_PROXY",
+                  "https_proxy", "http_proxy", "no_proxy", "all_proxy")
+    RUNNER_GRACE_SECONDS = 30
+    RUNNER_EXIT_MESSAGES = {
+        2: ("BLOCKED", "hermes-codex-run rejected the brainstorm stage"),
+        3: ("BLOCKED", "Codex isolation probe failed; model not invoked"),
+        4: ("FAILED", "Codex structured output is not a JSON object"),
+        124: ("FAILED", "Codex structured stage timed out"),
+    }
+
+    def execute_structured(self, task: dict[str, Any], *, stage_schema: str, stage_roots: list[str],
+                           timeout_seconds: int) -> StructuredExecutionResult:
+        """Run one read-only brainstorm stage through the runner and return its raw payload.
+
+        Same contract as ``ClaudeAgentAdapter.execute_structured``: the schema is
+        a stage name, the roots are exactly what the stage may see and the
+        timeout is the caller's effective budget. The runner probes isolation
+        without the model first and refuses to run the stage if it fails.
+        """
+        if not isinstance(stage_schema, str) or stage_schema not in STAGE_SCHEMAS:
+            raise StructuredExecutionError("BLOCKED", None, "unknown brainstorm stage schema")
+        stage = stage_schema
+        try:
+            argv, cwd, output = self._structured_argv(task, stage, stage_roots, timeout_seconds)
+        except AdapterExecutionError as exc:
+            raise StructuredExecutionError(exc.status, stage, str(exc), exc.evidence) from exc
+        log = output / self.log_filename
+        environment = {name: os.environ[name] for name in self.RUNNER_ENV if os.environ.get(name)}
+        try:
+            with os.fdopen(self._fresh_file(log), "wb") as stream:
+                process = subprocess.Popen(argv, cwd=cwd, stdout=stream, stderr=subprocess.STDOUT, shell=False,
+                                           env=environment)
+                try:
+                    exit_code = process.wait(timeout=timeout_seconds + self.RUNNER_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                    raise StructuredExecutionError("FAILED", stage, "Codex structured stage timed out", [str(log)])
+        except OSError as exc:
+            raise StructuredExecutionError("FAILED", stage, f"could not start {self.runner_name}: {exc}", [str(log)]) from exc
+        evidence = [str(log)] + [str(output / name) for name in (self.EXEC_LOG, self.PROBE_REPORT, self.STRUCTURED_RESULT)
+                                 if (output / name).is_file() and not (output / name).is_symlink()]
+        if exit_code != 0:
+            status, message = self.RUNNER_EXIT_MESSAGES.get(exit_code, ("FAILED", f"{self.runner_name} exited {exit_code}"))
+            reason = self._last_error(log)
+            raise StructuredExecutionError(status, stage, f"{message}: {reason}" if reason else message, evidence)
+        probe = self._read_json_nofollow(output / self.PROBE_REPORT)
+        probe_status = probe.get("status") if isinstance(probe, dict) else None
+        if probe_status != "PASS":
+            raise StructuredExecutionError("BLOCKED", stage, "Codex isolation probe did not pass", evidence)
+        payload = self._read_json_nofollow(output / self.STRUCTURED_RESULT)
+        if not isinstance(payload, dict):
+            raise StructuredExecutionError("FAILED", stage, "Codex structured output is not a JSON object", evidence)
+        return StructuredExecutionResult(stage=stage, payload=payload, evidence=evidence, metadata={
+            "profile": self.BRAINSTORM_PROFILE, "timeout_seconds": timeout_seconds, "isolation_probe": probe_status,
+        })
+
+    def _structured_argv(self, task: dict[str, Any], stage: str, stage_roots: Any,
+                         timeout_seconds: Any) -> tuple[list[str], Path, Path]:
+        if task.get("execution_profile") != self.BRAINSTORM_PROFILE or self.BRAINSTORM_PROFILE not in self.profiles:
+            raise AdapterExecutionError("BLOCKED", "structured execution requires the enabled brainstorm execution_profile")
+        if task.get("task_type") != self.BRAINSTORM_PROFILE or self.BRAINSTORM_PROFILE not in self.task_types:
+            raise AdapterExecutionError("BLOCKED", "structured execution requires the enabled brainstorm task_type")
+        if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool) or not 1 <= timeout_seconds <= 7200:
+            raise AdapterExecutionError("BLOCKED", "invalid effective timeout_seconds")
+        if not isinstance(stage_roots, list) or not stage_roots:
+            raise AdapterExecutionError("BLOCKED", "stage_roots must be a non-empty list")
+        roots = list(dict.fromkeys(self._authorized(value, "stage_roots") for value in stage_roots))
+        output = self._authorized(task.get("run_output_dir"), "run_output_dir")
+        if output not in roots:
+            raise AdapterExecutionError("BLOCKED", "run_output_dir must be one of the stage roots")
+        cwd = self._authorized(task.get("working_directory"), "working_directory")
+        task_file = self._authorized(task.get("brain", {}).get("task_file"), "brain.task_file")
+        for name, path in (("working_directory", cwd), ("brain.task_file", task_file)):
+            if not any(path == root or root in path.parents for root in roots):
+                raise AdapterExecutionError("BLOCKED", f"{name} is outside the stage roots")
+        if not self.runner_path.is_file():
+            raise AdapterExecutionError("BLOCKED", f"{self.runner_name} is not available")
+        if not (cwd / ".git").exists():
+            raise AdapterExecutionError("BLOCKED", "working_directory is not a Git repository")
+        probe = task.get("brainstorm_probe", {})
+        hidden = probe.get("hidden_paths", []) if isinstance(probe, dict) else None
+        if not isinstance(hidden, list) or not all(isinstance(item, str) and item.startswith("/") for item in hidden):
+            raise AdapterExecutionError("BLOCKED", "brainstorm_probe.hidden_paths must be absolute paths")
+        output.mkdir(parents=True, exist_ok=True)
+        argv = [str(self.runner_path), "--execution-profile", self.BRAINSTORM_PROFILE, "--stage-schema", stage,
+                "--working-directory", str(cwd), "--task-file", str(task_file), "--run-output-dir", str(output),
+                "--timeout-seconds", str(timeout_seconds)]
+        for root in roots:
+            argv.extend(["--allowed-path", str(root)])
+        for path in hidden:
+            argv.extend(["--probe-hidden", path])
+        return argv, cwd, output
+
+    @staticmethod
+    def _fresh_file(path: Path) -> int:
+        # A previous attempt's agent could have planted a symlink here: remove it
+        # and create a new file exclusively instead of following it.
+        if path.is_symlink() or path.exists():
+            path.unlink()
+        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+
+    @staticmethod
+    def _read_json_nofollow(path: Path) -> Any:
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            return None
+        try:
+            with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                return json.load(stream)
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _last_error(log: Path) -> str:
+        try:
+            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return ""
+        return next((line for line in reversed(lines) if line.startswith("ERROR:")), "")
 
     def _build_argv(self, *, task_type: str, cwd: Path, task_file: Path, output: Path,
                     profile: str, timeout: int, allowed_paths: list[Path]) -> list[str]:
