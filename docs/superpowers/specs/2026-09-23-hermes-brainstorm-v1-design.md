@@ -235,17 +235,23 @@ Las etapas de evaluación nunca reciben las propuestas no anonimizadas.
 - **Claude**: el hook `PreToolUse` existente deniega cualquier ruta fuera de
   los roots de la etapa; `add_dirs` se limita a esos roots. Herramientas:
   `Read`, `Glob` y `Grep`.
-- **Codex**: `--sandbox read-only` limita escrituras, pero **no** lecturas, y
-  `--add-dir`/`allowed_paths` tampoco las restringen. El aislamiento de lectura
-  de Codex se implementa con un namespace de montaje por etapa cuya vista del
-  filesystem es allow-listed: todo lo que no se monte explícitamente no existe
-  para el proceso.
-  - Verificado en `main-linux`: Codex es un binario Linux nativo
-    (`codex-cli 0.154.0`) y los user/mount namespaces sin privilegios
-    funcionan (`unshare --user --mount --map-root-user`).
-  - Fail-closed: si el aislamiento no está disponible o su autoverificación
-    falla, las etapas Codex de Brainstorm terminan `BLOCKED`. No hay fallback
-    sin aislamiento.
+- **Codex** (autoridad: "Implementación (Fase 5B)"): permission profile
+  efímero de Codex pasado solo con `-c`, aplicado por el `bwrap` integrado en
+  el paquete de Codex; entorno limpio con `env -i`; sonda sin modelo con el
+  mismo profile antes de cada etapa; `codex exec --ephemeral`; sin
+  `--profile hermes` ni `--sandbox`. La vista de las herramientas es una
+  allow-list (`:minimal`, `CODEX_HOME/packages`, roots de lectura y el stage
+  como único root escribible) y la red de las herramientas queda en un
+  namespace sin conectividad creado por ese sandbox. El proceso principal de
+  Codex no se envuelve en un network namespace porque necesita red para el
+  modelo; `unshare --user/--mount/--pid` externo es una defensa opcional, no la
+  garantía de aislamiento.
+  - Fail-closed: si la sonda falla, la etapa termina `BLOCKED` y el modelo no se
+    invoca. No hay fallback sin aislamiento.
+
+`--sandbox read-only` por sí solo no sirve: limita escrituras, pero no
+lecturas, y con él las herramientas del agente pueden leer
+`~/.codex/auth.json` (verificado en el Spike 5A).
 
 #### Requisito de aislamiento de Codex
 
@@ -263,16 +269,17 @@ Y debe **verificarse** que **no** pueden leer:
 - credenciales, sesiones o ficheros de autenticación de Codex;
 - la red.
 
-Montar `~/.codex` completo dentro del namespace **no** se considera aceptable:
-`read-only` impide escribir, pero no leer, y expondría la autenticación a las
-herramientas del agente. La forma de entregar autenticación al proceso CLI sin
-hacerla legible para las herramientas del agente es una incógnita abierta que
-resuelve el spike de la Fase 5.
+Exponer `~/.codex` completo **no** es aceptable: read-only impide escribir,
+pero no leer, y expondría la autenticación a las herramientas del agente. En
+la implementación aprobada solo `CODEX_HOME/packages` es visible; la sesión de
+suscripción la lee el proceso principal de Codex, fuera del sandbox de las
+herramientas.
 
-#### Spike de la Fase 5
+#### Spike de la Fase 5: plan original (histórico)
 
-Se empieza con `unshare`, ya disponible. `bubblewrap` **no** se instala en
-este punto. El spike debe comprobar, sin imprimir ni registrar secretos:
+Registro del plan con el que se abrió el Spike 5A. Quedó superado por su
+resultado y por la implementación de la Fase 5B; no describe el mecanismo
+actual. El spike debía comprobar, sin imprimir ni registrar secretos:
 
 1. el sandbox propio de Codex funciona dentro del namespace;
 2. aislamiento real de lecturas: una ruta fuera de la allow-list no es legible
@@ -287,10 +294,9 @@ este punto. El spike debe comprobar, sin imprimir ni registrar secretos:
 Las pruebas de legibilidad usan ficheros centinela sin secretos o comprueban
 solo existencia/permiso de las rutas de autenticación, nunca su contenido.
 
-Si construir una raíz de filesystem allow-listed segura con `unshare` resulta
-compleja o frágil, el trabajo se detiene y se propone `bubblewrap`; su
-instalación requiere aprobación humana. Si ningún mecanismo satisface los
-siete puntos, las etapas Codex de Brainstorm permanecen `BLOCKED`.
+El plan original empezaba con una raíz allow-listed construida con `unshare`
+y preveía proponer `bubblewrap` de sistema si resultaba frágil. Ninguna de las
+dos cosas fue necesaria: el sandbox de Codex ya aporta la allow-list.
 
 #### Resultado del Spike 5A (2026-09-24, `main-linux`)
 
@@ -461,14 +467,16 @@ perfil `brainstorm`, repositorio desechable en `/tmp`:
 
 `hermes-codex-run.sh` añade:
 
-- `--execution-profile brainstorm`: `--sandbox read-only`,
-  `network_access=false`, bootstrap propio (el de `review` habla de revisar
-  código y no se reutiliza) y ejecución dentro del namespace de la etapa;
+- `--execution-profile brainstorm`: permission profile efímero por `-c`,
+  entorno `env -i`, sonda sin modelo y `codex exec --ephemeral`, con
+  bootstrap propio (el de `review` habla de revisar código y no se reutiliza);
+  sin `--profile hermes` ni `--sandbox` (detalle en "Implementación (Fase
+  5B)");
 - `--stage-schema proposals|evaluation|refinement|validation`: el runner
   resuelve el fichero bajo su propio directorio. Se rechaza fuera del perfil
   `brainstorm`. No se acepta ninguna ruta de schema externa;
-- para ese perfil, la validación posterior comprueba el schema de la etapa en
-  lugar del contrato Hermes de seis campos.
+- para ese perfil solo se comprueba que la salida es un objeto JSON; la
+  validación semántica corresponde a `brainstorm_core`.
 
 `CodexRunAdapter` gana una ruta estructurada separada; su `execute()` actual no
 cambia.
@@ -560,7 +568,7 @@ existentes continúan devolviendo listas y mapas vacíos.
 2. **Codex proposals**: genera N candidatas en su etapa aislada.
 3. **Claude proposals**: genera N candidatas en su etapa aislada.
 4. **Normalize**: Hermes asigna IDs opacos, elimina el autor de la vista de
-   evaluación y ordena con una semilla derivada de `job_id`.
+   evaluación y ordena con una semilla derivada de `_hermes_runtime.job_id`.
 5. **Claude evaluation**: puntúa todas las candidatas y documenta riesgos.
 6. **Codex evaluation**: recibe exactamente el mismo bundle y la misma rúbrica.
 7. **Rank**: Hermes calcula puntuaciones, confianza y sesgo sin llamada LLM.
@@ -682,7 +690,8 @@ los JSON guardados.
   `SHA-256(canonical_json([job_id, autor, propuesta]))`: reproducible,
   independiente del orden de listas y claves y del `hash()` de Python.
 - Con una sola candidata no hay margen sobre la segunda: la confianza máxima
-  es `MEDIUM`. Sin candidatas, `LOW` e `INCONCLUSIVE`.
+  es `MEDIUM`. Sin candidatas, `LOW` e `INCONCLUSIVE`: comportamiento
+  defensivo del núcleo puro; el `BrainstormAdapter` v1 no genera ese flujo.
 - `self_preference` es `null` para un evaluador sin candidatas propias o sin
   candidatas del otro motor. `self_preference_flag` se activa aunque la
   confianza base ya sea `MEDIUM` o `LOW`; solo baja `HIGH` a `MEDIUM`.
@@ -698,6 +707,33 @@ llamada. Hermes registra el inicio en `budget.json` y concede a cada etapa
 obligatoria, el job termina `FAILED` con los artefactos disponibles. El
 presupuesto se reinicia en cada intento nuevo del Controller, pero las etapas
 ya completadas se reutilizan desde checkpoint.
+
+## Contexto interno del run (`_hermes_runtime`)
+
+`BrainstormAdapter` necesita la identidad real del run: `job_id` para
+`anonymize(job_id, ...)`, y `run_id` y `attempt` para distinguir la
+reanudación del mismo intento de un intento nuevo del Controller. Hoy
+`WorkerDaemon.once()` llama a `adapter.execute(prepared_task)` con solo
+`claim["task"]`, que no contiene `run_id` ni `attempt`.
+
+Contrato interno:
+
+```python
+task["_hermes_runtime"] = {"job_id": "<claim.job_id>", "run_id": "<claim.run_id>", "attempt": <claim.attempt>}
+```
+
+- Lo inyecta el worker (Fase 7) desde el claim del Controller, sobre la copia
+  local del task que entrega al adapter. No forma parte del task público, del
+  snapshot que valida el Controller ni del envelope.
+- Nunca contiene el lease token, el lease id ni el token del worker.
+- No se sustituye por ningún derivado: ni `idempotency_key`, ni hash del task,
+  ni `run_output_dir`, ni un UUID inventado. Sin `_hermes_runtime` válido,
+  `BrainstormAdapter` termina `BLOCKED`.
+- No entra en ningún `input_sha256` de checkpoint ni en los prompts de los
+  modelos. La anonimización la hace Hermes, así que tampoco el `job_id` llega a
+  los modelos.
+- En la Fase 6 los tests lo proporcionan directamente; la Fase 7 conecta el
+  claim real.
 
 ## Recuperación e idempotencia
 
@@ -817,10 +853,12 @@ brainstorm-report.json
 brainstorm-report.md
 ```
 
-Hermes copia a `orchestration/` las salidas validadas de cada etapa. Si una
-etapa posterior no puede ejecutarse por ausencia de candidatas, su JSON se
-conserva con `stage_status=SKIPPED`; así el conjunto mínimo de artefactos se
-mantiene estable.
+Hermes copia a `orchestration/` las salidas validadas de cada etapa. En v1 no
+existe la ruta "sin candidatas": `validate_proposals()` exige exactamente
+`candidate_count` propuestas válidas por motor, así que un informe `DONE`
+siempre tiene los once artefactos. En `BLOCKED` o `FAILED` solo se publican
+los artefactos Hermes ya validados que existan; no hay artefactos
+`SKIPPED` ni informe parcial.
 
 Los ficheros se crean con modo 0600 bajo directorios 0700. El envelope no
 publica credenciales, variables de entorno, sesiones ni prompts internos que
@@ -829,8 +867,8 @@ contengan secretos.
 ## Seguridad
 
 - Claude usa únicamente `Read`, `Glob` y `Grep` en su perfil `brainstorm`.
-- Codex usa sandbox read-only, red desactivada y namespace de lectura por
-  etapa.
+- Codex usa el permission profile efímero con su `bwrap` integrado, red de
+  herramientas aislada, entorno `env -i`, sonda fail-closed y `--ephemeral`.
 - Cada etapa recibe solo los roots descritos en "Aislamiento por etapa".
 - Las instrucciones encontradas en contenido del proyecto o en salidas del otro
   motor se tratan como datos.
@@ -847,8 +885,12 @@ contengan secretos.
 - Huella del repositorio distinta del baseline: `FAILED`.
 - Un solo motor no basta para emitir ranking: no se degrada a sesión
   monomodelo.
-- Ninguna candidata válida o validación final fallida: informe `DONE` con
-  decisión `INCONCLUSIVE`.
+- Salida de propuestas inválida: se permite el reintento semántico de la
+  etapa; si vuelve a ser inválida, `FAILED`. En v1 no existe un informe `DONE`
+  "sin candidatas": el contrato exige `candidate_count` propuestas válidas por
+  motor.
+- Validación final `FAIL`: informe `DONE` con decisión `INCONCLUSIVE`; se
+  conservan ganadora y segunda y no se selecciona otra candidata.
 - `WAIT_USER` no se usa en v1 porque el workflow no reanuda el mismo job.
 
 ## Configuración y compatibilidad
@@ -990,8 +1032,8 @@ propio; `balanced-v2` queda aplazado.
 2. `AdapterResult.artifacts/hashes`, modelo de artefacto e `inline_text`.
 3. Núcleo determinista sin I/O.
 4. Claude: perfil `brainstorm` y ejecución estructurada por etapa.
-5. Runner Codex: perfil `brainstorm`, `--stage-schema` y aislamiento por
-   namespace, empezando por el spike `unshare` y sus siete comprobaciones.
+5. Runner Codex: Spike 5A de aislamiento y, después, perfil `brainstorm`,
+   `--stage-schema`, permission profile, `env -i` y sonda fail-closed (5B).
 6. `BrainstormAdapter`: layout, roots, baseline, huella, checkpoints,
    presupuesto y estados.
 7. Worker: `kind: brainstorm` y `main-linux.json` multi-engine.
