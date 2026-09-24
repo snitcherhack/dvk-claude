@@ -1131,6 +1131,75 @@ motores:
 Brainstorm sigue implementado y experimental: pendiente del smoke real con
 ambos motores y del E2E distribuido.
 
+### Resultado (Fase 9): smoke real local con Claude y Codex
+
+Fecha: 2026-09-24, `main-linux`, rama `feat/brainstorm-v1-implementation` en
+`475d267`. Estado: **implementado + smoke real local superado + pendiente
+del E2E distribuido**. No es operativo.
+
+Entorno, todo con rutas explícitas (sin depender del `PATH`):
+
+- Python del worker `/home/deiv/.local/share/dvk-hermes/worker-venv/bin/python`
+  (3.12.3), `claude-agent-sdk 0.2.156`.
+- Claude CLI `2.1.276` en
+  `/home/deiv/.local/share/dvk-hermes/python/claude_agent_sdk/_bundled/claude`,
+  `subscription_only=true`, sin variables de proveedor externo.
+- Codex CLI `codex-cli 0.154.0` en `/home/deiv/.local/bin/codex`.
+- Runner `hermes-codex-run.sh` de la rama.
+- Directorio desechable `/tmp/hermes-brainstorm-real-smoke-*` con `repo/`
+  (Git real, un commit, `README.md` y `docs/onboarding.md`),
+  `controller-runtime/`, `task-runtime/`, `worker-state/` y `state/`.
+  Controller local con `ControllerHTTPServer` en puerto efímero, worker
+  `main-linux-brainstorm-smoke` con token de enrolamiento temporal y una copia
+  de `main-linux.json` en la que solo cambian URL, worker id, `state_file` y
+  token. `hermes01`, servicios y configuración activa no participan.
+
+Flujo: `register_project` → `build_project_task(engine="brainstorm",
+brainstorm_candidates=2)` (`timeout_seconds=1200`, sin `max_turns`) →
+`enqueue` → `WorkerDaemon.once()` por HTTP → `EngineRoutingAdapter` →
+`BrainstormAdapter` → seis llamadas reales → ingest → `Controller.status()`.
+
+| Llamada | Motor | Duración | Timeout efectivo | Salida |
+| --- | --- | ---: | ---: | ---: |
+| proposals | Codex | 42,3 s | 300 s | 3664 B |
+| proposals | Claude | 46,5 s | 300 s | 6405 B |
+| evaluation | Claude | 87,2 s | 300 s | 8665 B |
+| evaluation | Codex | 52,9 s | 300 s | 4952 B |
+| refinement | Codex | 39,5 s | 300 s | 3528 B |
+| validation | Claude | 33,1 s | 300 s | 2290 B |
+
+- Total del `once()`: 301,9 s; 6 llamadas, 0 reintentos (`retries_used=0`).
+- Controller: `state=DONE`, `engine=brainstorm`, `result.status=DONE`,
+  `gate=null`, `active_run_id=null`, `attempt=1`.
+- Decisión: `RECOMMENDED_FOR_PILOT`; ganadora `C03` (autor Codex), final 75.25
+  (Claude 72.5, Codex 78, desacuerdo 5.5), segunda `C04`; confianza `MEDIUM`
+  (base `MEDIUM`); `self_preference` Claude -8.75, Codex 20.5, marca activa sin
+  efecto adicional porque la base ya era `MEDIUM`; validación `PASS`.
+- Artefactos en `Controller.status()`: los once esperados, con bytes y SHA-256
+  iguales a los ficheros y a `hashes`; `brainstorm-report.md` de 24599 bytes
+  inline y exacto; ninguno bajo `stages/` ni `executions/`.
+- Huella del repo idéntica antes y después (HEAD, status, diff y untracked).
+- Sondas Codex: `PASS` en las tres etapas (33 comprobaciones cada una), con
+  `auth.json` y `sessions` ocultos, red de herramientas denegada, entorno
+  limpio, `request/` legible y no escribible, ejecución escribible y
+  `orchestration/` oculto.
+- Claude: `Read`/`Glob`/`Grep` y roots `[repo, request, call-0001]` en las tres
+  etapas. Todas las llamadas recibieron solo esos tres roots.
+- Privacidad: el escaneo del directorio de evidencia no encontró el token
+  temporal, patrones de clave ni campos de credenciales.
+
+Observaciones y limitaciones:
+
+- `max_turns`: Claude usa el valor por defecto 6; ninguna etapa falló por
+  límite de turnos. El número de turnos consumidos no lo expone el adapter.
+- Codex sigue avisando de que no hay `bubblewrap` en `PATH` y usa el
+  integrado, como se documentó en la Fase 5B.
+- La etapa más lenta fue la evaluación de Claude (87 s) con cuatro candidatas;
+  con `candidate_count=3` cabe esperar más tiempo. El límite de 300 s por
+  llamada tuvo margen en todas.
+- La confianza quedó en `MEDIUM` y el evaluador Codex mostró un sesgo de
+  autopuntuación de 20.5 puntos; el informe lo expone sin cambiar el ranking.
+
 Los motores existentes, tasks sin `execution_engine`, resultados heredados,
 artefactos existentes y `HybridAdapter` conservan su comportamiento.
 `balanced-v1` no cambia.
