@@ -1069,6 +1069,57 @@ pero el `main-linux.json` versionado anterior solo configuraba Codex.
 - Nada de esto está desplegado: el servicio `dvk-hermes-main-linux` sigue
   usando su configuración propia fuera del repositorio.
 
+### Resultado (Fase 8): integración local con motores falsos
+
+`tests/test_brainstorm_integration.py` recorre el camino de producción en un
+solo proceso: repo Git temporal con commit real, `Controller` con reloj falso,
+`register_project` + `build_project_task(engine="brainstorm")` + `enqueue`,
+`ControllerHTTPServer` en un puerto efímero, `WorkerDaemon` construido desde
+una configuración multi-engine equivalente a `main-linux.json` y
+`HTTPControllerClient` (enrol, heartbeat, claim, ingest). Solo se sustituye la
+construcción de los dos adapters base por motores estructurados falsos
+deterministas; `EngineRoutingAdapter`, `HybridAdapter` y `BrainstormAdapter`
+son los reales. Sin Claude, Codex, red ni subprocess de motor.
+
+Resultados verificados:
+
+- Happy path: job `DONE`, engine `brainstorm`, `result.gate=null`, decisión
+  `RECOMMENDED_FOR_PILOT`, un run (`attempt=1`, worker correcto),
+  `active_run_id=null`, las seis llamadas en el orden de diseño, huella del
+  repo idéntica y el envelope viajó comprimido con gzip.
+- `status()` expone los once artefactos con `sha256`/`bytes` iguales a los
+  ficheros y el informe Markdown inline exacto; no contiene `lease_id`,
+  `lease_token` ni el token del worker (sí el campo público
+  `lease_expires_at`, que es un timestamp).
+- `_hermes_runtime`: el adapter recibe el `job_id`, `run_id` y `attempt` reales;
+  el `task_json` del Controller no lo contiene; un valor falsificado en el
+  snapshot se sustituye por el del claim.
+- `INCONCLUSIVE`: validación `FAIL` termina `DONE` con la misma ganadora y una
+  sola etapa de refinamiento.
+- Reintento seguro: en el intento 1 se pierde la lease a mitad (409 en el
+  heartbeat, resultado descartado), `reconcile_expired_leases()` devuelve el
+  job a `QUEUED` y el intento 2 (mismo `job_id`, nuevo `run_id`) reutiliza las
+  propuestas desde checkpoint, llama solo a las cuatro etapas restantes (una
+  vez cada una), reinicia presupuesto y reintentos y termina `DONE`; `status()`
+  muestra el intento 1 `STALE` y el 2 `DONE`.
+- Reinicio del worker con el mismo claim: mismo `run_id`/`attempt` y
+  `_hermes_runtime`, presupuesto y reintentos conservados, propuestas
+  reutilizadas.
+- Matching: solo un worker con `codex` y `claude` reclama Brainstorm;
+  `default`/`auto` nunca lo seleccionan.
+- Rechazos: `run_output_dir` dentro del repo termina `BLOCKED` sin llamar a
+  motores; artefactos inválidos terminan en un envelope `FAILED` aceptado sin
+  bucle; el Controller rechaza un envelope Brainstorm con `engine=codex`.
+
+Hallazgo preexistente (no corregido en esta fase): el Controller acepta un
+`runtime_directory` dentro de `working_directory`, y el worker materializa
+`hermes-task.md` ahí antes de que `BrainstormAdapter` bloquee, dejando un
+fichero no trackeado en el repo. Propuesta: rechazarlo en la validación del
+manifest.
+
+Brainstorm sigue implementado y experimental: pendiente del smoke real con
+ambos motores y del E2E distribuido.
+
 Los motores existentes, tasks sin `execution_engine`, resultados heredados,
 artefactos existentes y `HybridAdapter` conservan su comportamiento.
 `balanced-v1` no cambia.
