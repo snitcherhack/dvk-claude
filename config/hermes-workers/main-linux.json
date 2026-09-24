@@ -1,1 +1,42 @@
-{"controller_url":"http://127.0.0.1:8787","token_env":"HERMES_MAIN_LINUX_TOKEN","state_file":"runtime/main-linux-state.json","task_materialization_roots_env":"HERMES_TASK_ROOTS","adapter":{"kind":"codex-run","runner_path_env":"HERMES_CODEX_RUN","authorized_roots_env":"HERMES_AUTHORIZED_ROOTS","execution_profiles":["hermes"],"task_types":["development","hermes_smoke"]},"worker":{"worker_id":"main-linux","platform":"linux","environment":"Ubuntu 24.04 WSL2","capabilities":["codex","git","python","tests","image_qa","network"],"max_concurrent_jobs":1}}
+{
+  "controller_url": "http://127.0.0.1:8787",
+  "token_env": "HERMES_MAIN_LINUX_TOKEN",
+  "state_file": "runtime/main-linux-state.json",
+  "task_materialization_roots_env": "HERMES_TASK_ROOTS",
+  "default_execution_engine": "codex",
+  "adapters": {
+    "codex": {
+      "kind": "codex-run",
+      "runner_path_env": "HERMES_CODEX_RUN",
+      "authorized_roots_env": "HERMES_AUTHORIZED_ROOTS",
+      "execution_profiles": ["hermes", "review", "brainstorm"],
+      "task_types": ["development", "hermes_smoke", "brainstorm"]
+    },
+    "claude": {
+      "kind": "claude-agent",
+      "authorized_roots_env": "HERMES_AUTHORIZED_ROOTS",
+      "cli_path_env": "HERMES_CLAUDE_CLI",
+      "execution_profiles": ["claude_smoke", "hermes", "brainstorm"],
+      "task_types": ["claude_smoke", "development", "brainstorm"],
+      "subscription_only": true
+    },
+    "hybrid": {
+      "kind": "hybrid",
+      "primary_engine": "claude",
+      "review_engine": "codex",
+      "max_review_rounds": 1
+    },
+    "brainstorm": {
+      "kind": "brainstorm",
+      "claude_engine": "claude",
+      "codex_engine": "codex"
+    }
+  },
+  "worker": {
+    "worker_id": "main-linux",
+    "platform": "linux",
+    "environment": "Ubuntu 24.04 WSL2",
+    "capabilities": ["codex", "claude", "git", "python", "tests", "image_qa", "network"],
+    "max_concurrent_jobs": 1
+  }
+}

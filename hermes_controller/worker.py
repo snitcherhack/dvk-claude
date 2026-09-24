@@ -16,6 +16,11 @@ from urllib.request import Request, urlopen
 
 from .adapters import AdapterResult, ClaudeAgentAdapter, CodexRunAdapter, CxhRunAdapter, EngineRoutingAdapter, ExecutionAdapter, HybridAdapter, MockAdapter
 from .artifacts import validate_artifacts
+from .brainstorm import BrainstormAdapter
+from .engine_policy import EXPLICIT_ONLY_ENGINES
+
+KNOWN_ENGINES = frozenset({"codex", "claude", "hybrid", "native", "brainstorm"})
+COMPOSED_KINDS = frozenset({"hybrid", "brainstorm"})
 
 
 class TransportError(RuntimeError): pass
@@ -96,30 +101,66 @@ class WorkerDaemon:
             return cls._adapter_from_config(config.get("adapter", {"kind": "mock"}))
         if not isinstance(engines, dict) or not engines:
             raise ValueError("adapters must be a non-empty object")
-        unknown = set(engines) - {"codex", "claude", "hybrid", "native"}
+        unknown = set(engines) - KNOWN_ENGINES
         if unknown:
             raise ValueError(f"unknown execution engine adapters: {sorted(unknown)}")
         default_engine = config.get("default_execution_engine", "codex")
+        if default_engine in EXPLICIT_ONLY_ENGINES:
+            raise ValueError(f"default_execution_engine cannot be an explicit-only engine: {default_engine}")
+        for name, spec in engines.items():
+            if not isinstance(spec, dict):
+                raise ValueError(f"adapter spec for {name} must be an object")
+            if (name == "brainstorm") != (spec.get("kind") == "brainstorm"):
+                raise ValueError("kind brainstorm is only allowed for the brainstorm engine, "
+                                 "and the brainstorm engine requires kind brainstorm")
+        # Build in dependency order: base engines first, then composed ones.
         adapters: dict[str, ExecutionAdapter] = {}
         for name, spec in engines.items():
-            if spec.get("kind") != "hybrid":
+            if spec.get("kind") not in COMPOSED_KINDS:
                 adapters[name] = cls._adapter_from_config(spec)
+        base = dict(adapters)
         for name, spec in engines.items():
             if spec.get("kind") == "hybrid":
                 primary_name = spec.get("primary_engine", "claude")
                 reviewer_name = spec.get("review_engine", "codex")
-                if primary_name not in adapters or reviewer_name not in adapters:
+                if primary_name not in base or reviewer_name not in base:
                     raise ValueError("hybrid adapter references an unavailable engine")
                 adapters[name] = HybridAdapter(
-                    adapters[primary_name], adapters[reviewer_name],
+                    base[primary_name], base[reviewer_name],
                     max_review_rounds=spec.get("max_review_rounds", 1),
                 )
+        if "brainstorm" in engines:
+            adapters["brainstorm"] = cls._brainstorm_adapter(engines, base)
         return EngineRoutingAdapter(adapters, default_engine=default_engine)
+
+    @staticmethod
+    def _brainstorm_adapter(engines: dict[str, Any], base: dict[str, ExecutionAdapter]) -> BrainstormAdapter:
+        """BrainstormAdapter over two explicitly referenced, distinct structured base engines."""
+        spec = engines["brainstorm"]
+        if set(spec) - {"kind", "claude_engine", "codex_engine"}:
+            raise ValueError("brainstorm adapter has unexpected fields")
+        references = {}
+        for field, kind in (("claude_engine", "claude-agent"), ("codex_engine", "codex-run")):
+            name = spec.get(field)
+            if not isinstance(name, str) or not name:
+                raise ValueError("brainstorm requires claude_engine and codex_engine")
+            if name not in engines or name not in base:
+                raise ValueError(f"brainstorm {field} references an unavailable engine: {name}")
+            if engines[name].get("kind") != kind:
+                raise ValueError(f"brainstorm {field} must reference a {kind} adapter")
+            if not callable(getattr(base[name], "execute_structured", None)):
+                raise ValueError(f"brainstorm {field} adapter does not implement execute_structured")
+            references[field] = base[name]
+        if references["claude_engine"] is references["codex_engine"]:
+            raise ValueError("brainstorm requires two distinct engines")
+        return BrainstormAdapter(references["claude_engine"], references["codex_engine"])
 
     @staticmethod
     def _adapter_from_config(config: dict[str, Any]) -> ExecutionAdapter:
         kind = config.get("kind", "mock")
         if kind == "mock": return MockAdapter()
+        if kind in COMPOSED_KINDS:
+            raise ValueError(f"{kind} adapter requires the multi-engine 'adapters' configuration")
         import os
         if kind in {"cxh-run", "codex-run"}:
             runner = os.environ[config["runner_path_env"]]
@@ -155,7 +196,7 @@ class WorkerDaemon:
 
     def _execution_engine_for_task(self, task: dict[str, Any]) -> str:
         explicit = task.get("execution_engine")
-        if explicit in {"codex", "claude", "hybrid", "native"}:
+        if explicit in KNOWN_ENGINES:
             return explicit
         return "codex" if "codex" in task.get("required_capabilities", []) else "native"
 
@@ -190,6 +231,21 @@ class WorkerDaemon:
         prepared_brain = dict(prepared["brain"])
         prepared_brain["task_file"] = str(task_file)
         prepared["brain"] = prepared_brain
+        return prepared
+
+    def _prepare_task(self, claim: dict[str, Any]) -> dict[str, Any]:
+        """Private copy of the claimed task with the internal ``_hermes_runtime`` context.
+
+        Only the claim identity (job, run, attempt) is added; lease data and
+        credentials never enter the task. Any ``_hermes_runtime`` already in
+        the snapshot is overwritten, and ``claim["task"]`` is never mutated.
+        """
+        job_id, run_id, attempt = claim.get("job_id"), claim.get("run_id"), claim.get("attempt")
+        if (not isinstance(job_id, str) or not job_id or not isinstance(run_id, str) or not run_id
+                or not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1):
+            raise ValueError("claim identity is invalid")
+        prepared = json.loads(json.dumps(self._materialize_inline_task(claim["task"])))
+        prepared["_hermes_runtime"] = {"job_id": job_id, "run_id": run_id, "attempt": attempt}
         return prepared
 
     @staticmethod
@@ -262,7 +318,7 @@ class WorkerDaemon:
         result_box: list[Any] = []
         def execute_claim() -> None:
             try:
-                prepared_task = self._materialize_inline_task(claim["task"])
+                prepared_task = self._prepare_task(claim)
                 result_box.append(self.adapter.execute(prepared_task))
             except ValueError as exc:
                 result_box.append(AdapterResult(status="BLOCKED", summary=f"worker task preparation blocked: {exc}"))

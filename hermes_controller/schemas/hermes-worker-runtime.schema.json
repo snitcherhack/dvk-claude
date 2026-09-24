@@ -7,7 +7,7 @@
       "type": "object",
       "required": ["kind"],
       "properties": {
-        "kind": {"enum": ["mock", "cxh-run", "codex-run", "claude-agent", "hybrid"]},
+        "kind": {"enum": ["mock", "cxh-run", "codex-run", "claude-agent", "hybrid", "brainstorm"]},
         "runner_path_env": {"type": "string"},
         "authorized_roots_env": {"type": "string"},
         "cli_path_env": {"type": "string"},
@@ -17,7 +17,9 @@
         "subscription_only": {"type": "boolean"},
         "primary_engine": {"enum": ["claude", "codex"]},
         "review_engine": {"enum": ["codex", "claude"]},
-        "max_review_rounds": {"type": "integer", "minimum": 0, "maximum": 3}
+        "max_review_rounds": {"type": "integer", "minimum": 0, "maximum": 3},
+        "claude_engine": {"type": "string", "minLength": 1},
+        "codex_engine": {"type": "string", "minLength": 1}
       },
       "additionalProperties": false
     }
@@ -33,7 +35,7 @@
     "adapters": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": {"enum": ["codex", "claude", "hybrid", "native"]},
+      "propertyNames": {"enum": ["codex", "claude", "hybrid", "native", "brainstorm"]},
       "additionalProperties": {"$ref": "#/$defs/adapter"}
     },
     "default_execution_engine": {"enum": ["codex", "claude", "hybrid", "native"]},

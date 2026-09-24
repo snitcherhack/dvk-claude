@@ -1020,7 +1020,54 @@ Git; se mantienen referencias mediante variables de entorno.
 
 Antes de declarar el modo operativo debe comprobarse la configuración realmente
 desplegada, porque la documentación registra E2E anteriores de Claude/Hybrid
-pero el `main-linux.json` versionado actual solo configura Codex.
+pero el `main-linux.json` versionado anterior solo configuraba Codex.
+
+### Implementación (Fase 7): worker multi-engine
+
+- `WorkerDaemon._prepare_task(claim)` trabaja sobre una copia profunda del task
+  (tras materializar el inline task) e inyecta exactamente
+  `_hermes_runtime = {"job_id", "run_id", "attempt"}` tomados del claim. Nunca
+  incluye `lease_id`, `lease_token`, tokens ni timestamps; sobrescribe
+  cualquier `_hermes_runtime` que traiga el snapshot y no modifica
+  `claim["task"]`. Un claim con identidad inválida termina `BLOCKED` sin
+  llamar al adapter. Al reiniciar con el `active_claim` persistido se
+  reconstruye el mismo contexto (mismo `run_id` y `attempt`); un claim nuevo
+  del Controller trae otro `run_id`/`attempt`.
+- `_execution_engine_for_task` reconoce `brainstorm`: su envelope lleva
+  `"engine": "brainstorm"` y `engine_result`, nunca `codex_result`. Los tasks
+  heredados sin `execution_engine` conservan la regla anterior (`codex` si la
+  capability `codex` está presente, `native` si no).
+- `_adapter_from_worker_config` admite `codex`, `claude`, `hybrid`, `native` y
+  `brainstorm`. Construye primero los adapters base y después los compuestos
+  (`hybrid`, `brainstorm`). Config de Brainstorm:
+
+  ```json
+  "brainstorm": {"kind": "brainstorm", "claude_engine": "claude", "codex_engine": "codex"}
+  ```
+
+  Fail-closed si falta un campo o hay campos extra, si una referencia no existe
+  o apunta a un adapter compuesto, si `claude_engine` no es `claude-agent` o
+  `codex_engine` no es `codex-run`, si el adapter referenciado no implementa
+  `execute_structured` o si ambas referencias son el mismo adapter. `kind:
+  brainstorm` solo es válido bajo la clave `brainstorm`, y como `adapter`
+  standalone se rechaza. `default_execution_engine=brainstorm` se rechaza.
+- `hermes-worker-runtime.schema.json` admite `kind: brainstorm`, la clave
+  `brainstorm` en `adapters` y los campos `claude_engine`/`codex_engine`;
+  `default_execution_engine` sigue limitado a `codex`, `claude`, `hybrid` y
+  `native`.
+- `config/hermes-workers/main-linux.json` pasa a `adapters` con `codex`
+  (perfiles `hermes`, `review`, `brainstorm`), `claude` (`claude_smoke`,
+  `hermes`, `brainstorm`, `subscription_only`), `hybrid` (Claude primario,
+  Codex reviewer, 1 ronda) y `brainstorm`; `default_execution_engine` sigue en
+  `codex`. Capabilities: `codex`, `claude`, `git`, `python`, `tests`,
+  `image_qa`, `network`; no existe capability `brainstorm`. Hybrid se incluye
+  porque un worker con `codex` y `claude` satisface sus capabilities y podría
+  reclamar tareas Hybrid. Secretos y rutas siguen referenciados solo por
+  variables de entorno (`HERMES_CODEX_RUN`, `HERMES_AUTHORIZED_ROOTS`,
+  `HERMES_CLAUDE_CLI`, `HERMES_TASK_ROOTS`, `HERMES_MAIN_LINUX_TOKEN`);
+  `controller_url` no cambia hasta el despliegue.
+- Nada de esto está desplegado: el servicio `dvk-hermes-main-linux` sigue
+  usando su configuración propia fuera del repositorio.
 
 Los motores existentes, tasks sin `execution_engine`, resultados heredados,
 artefactos existentes y `HybridAdapter` conservan su comportamiento.
