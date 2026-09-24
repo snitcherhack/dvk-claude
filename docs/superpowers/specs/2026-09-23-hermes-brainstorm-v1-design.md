@@ -584,6 +584,72 @@ permite como máximo un reintento por salida estructural inválida en una etapa
 y dos reintentos totales por intento de job; el máximo es ocho llamadas por
 intento. Las etapas reutilizadas desde checkpoint no cuentan.
 
+### Implementación (Fase 6, `hermes_controller/brainstorm.py`)
+
+```python
+BrainstormAdapter(claude, codex, *, clock=time.time, stage_timeout_cap=300)
+    .execute(task) -> AdapterResult
+render_markdown(report) -> str            # determinista, sin LLM
+render_inline_summary(report) -> str      # <= 32768 bytes
+repo_fingerprint(working_directory) -> dict
+```
+
+- Aún no se registra en `WorkerDaemon` ni en `EngineRoutingAdapter` (Fase 7).
+- Prepare exige `task_type`, `execution_profile` y (si existe)
+  `execution_engine` = `brainstorm`, bloque `brainstorm` válido,
+  `timeout_seconds` 1..7200 (por defecto 1800), `_hermes_runtime` con
+  exactamente `job_id`, `run_id` y `attempt` (y `job_id` igual al del task),
+  repo Git existente y `run_output_dir` fuera del repo y de los workspaces. La
+  pregunta sale de `task_text` o, si no existe, de `brain.task_file` (sin
+  seguir symlinks, máximo 1 MiB). Cualquier fallo aquí es `BLOCKED`.
+- Layout `orchestration/`, `orchestration/checkpoints/` y `stages/<motor>-<etapa>/`
+  (con `input/`), todo 0700 con `chmod` explícito; ficheros Hermes 0600 escritos
+  con `mkstemp` + `fsync` + `os.replace`, que sustituye sin seguir un symlink
+  plantado. Un directorio Hermes que sea symlink es `FAILED`.
+- Cada etapa recibe un `task.md` nuevo y sus inputs en `input/`: proposals no
+  tiene inputs (pregunta, rúbrica y `candidate_count` van en `task.md`);
+  evaluation recibe `candidates-anonymized.json` y `rubric.json` idénticos para
+  ambos motores; refinement, `winner.json`, `critiques.json` (las dos críticas
+  sin nombre de evaluador) y `rubric.json`; validation, `refined.json` y
+  `rubric.json`. Ningún `task.md` ni input nombra motores ni autores.
+- Roots por etapa: `working_directory`, workspaces seleccionados (ordenados por
+  nombre) y el directorio de la etapa. Para Codex,
+  `brainstorm_probe.hidden_paths` incluye `orchestration/`, el task file del
+  run y los otros siete directorios de etapa posibles. Los stage tasks no
+  llevan `_hermes_runtime`.
+- `baseline.json`: `{"version": 1, "fingerprint": {"head", "status_sha256",
+  "diff_sha256", "untracked": {ruta: sha256}}, "created_run_id",
+  "created_attempt"}`. Se crea una vez; en cada ejecución se compara con el
+  repo antes de llamar a modelos y otra vez al final. Git se invoca con
+  `--no-optional-locks -c core.fsmonitor=false`. Un repo sin commits usa
+  `head="UNBORN"` y el diff contra el árbol vacío.
+- `budget.json`: `{"version": 1, "run_id", "attempt", "budget_seconds",
+  "started_at", "retries_used", "stage_retries": {etapa: n}, "model_calls"}`.
+  Mismo `(run_id, attempt)`: se conservan presupuesto y reintentos. Otro par:
+  presupuesto y reintentos se reinician; los checkpoints se reutilizan.
+  `effective_timeout = int(min(300, restante))`; si queda menos de 1 s,
+  `FAILED`. `STAGE_TIMEOUT_CAP_SECONDS = 300` es la constante a medir.
+- Checkpoint `checkpoints/<motor>-<etapa>.json`: `{"schema_version":
+  "hermes-brainstorm-checkpoint/1", "stage", "engine", "stage_name",
+  "input_sha256", "output_path", "output_sha256"}`. `input_sha256` cubre de
+  forma canónica el task sin `_hermes_runtime`, la pregunta y el `task.md` e
+  inputs exactos de la etapa (la config y la rúbrica van dentro del task). Se
+  reutiliza solo si coinciden versión, etapa, motor, `input_sha256`, ruta y
+  hash del output y el payload vuelve a pasar el validador; si no, se
+  recalcula. Un checkpoint, baseline o budget ilegible o con estructura
+  inválida es `FAILED`.
+- Reintentos: solo por salida semánticamente inválida (`ValueError` del
+  validador), máximo uno por etapa y dos por intento, persistidos en
+  `budget.json`. `StructuredExecutionError` no se reintenta: `BLOCKED` se
+  mantiene y cualquier otro estado es `FAILED`.
+- Report: `build_report()` para el JSON, Markdown determinista con el orden de
+  criterios de la rúbrica, y `brainstorm-report.inline.md` solo si el Markdown
+  supera 32768 bytes. Artefactos calculados releyendo los bytes escritos.
+- Resultado `DONE` con `gate=null` para `RECOMMENDED_FOR_PILOT` e
+  `INCONCLUSIVE`; `remaining` indica que el piloto requiere una tarea humana
+  nueva. `BLOCKED`/`FAILED` publican solo los outputs Hermes ya validados, sin
+  informe ni `inline_text`.
+
 ## Datos de etapa
 
 Todos los campos de texto tienen longitud máxima validada por Hermes y las
