@@ -326,7 +326,7 @@ El sistema ya ha demostrado:
 - jobs creados y persistidos por el Controller;
 - `main-linux` ONLINE y reclamando jobs;
 - ejecuciones reales Codex, Claude, Hybrid y Brainstorm;
-- Brainstorm distribuido real con Controller en `hermes01`, worker en `main-linux`, seis llamadas Claude/Codex, cero reintentos, once artefactos verificados y repo sin cambios;
+- Brainstorm distribuido real con Controller en `hermes01` y worker en `main-linux`; tras el despliegue permanente, el smoke productivo `0fec7b57-bbf5-442d-9069-2793e8970332` terminó `DONE / RECOMMENDED_FOR_PILOT` con seis llamadas, cero reintentos, once artefactos verificados, tres sondas Codex `PASS` y repo sin cambios;
 - resultados terminales `DONE` y `FAILED`;
 - selección automática `balanced-v1`;
 - una tarea enviada desde Telegram que recorrió la cola real hasta `main-linux`;
@@ -342,4 +342,4 @@ Una ejecución `FAILED` no implica un fallo de transporte. El job read-only que 
 4. Mantener el gateway como interfaz y el Controller como autoridad de estado.
 5. Habilitar `windows-render` sólo cuando su flujo y gates estén probados.
 6. Mantener trazabilidad de engine, worker, run, evidencia y resultado en cada delegación.
-7. Tras revisión humana, fusionar y desplegar permanentemente Brainstorm v1; hasta entonces el E2E está verificado pero producción sigue en las revisiones anteriores.
+7. Brainstorm v1 quedó fusionado y desplegado permanentemente el 24 de septiembre de 2026. Mantener monitorización de retries semánticos y regresiones sin introducir selección automática en `balanced-v1`.

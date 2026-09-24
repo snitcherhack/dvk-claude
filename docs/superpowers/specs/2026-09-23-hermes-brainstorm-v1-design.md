@@ -2,7 +2,7 @@
 
 Fecha: 2026-09-23
 
-Estado: **Fases 0-11 completadas; implementación y E2E distribuido verificados**. El E2E real `hermes01 -> main-linux -> Claude/Codex -> hermes01` superó los criterios de aceptación el 2026-09-24 y la documentación canónica quedó actualizada. La rama sigue pendiente de revisión humana, merge/push y despliegue permanente; tras el E2E se restauraron las revisiones productivas anteriores.
+Estado: **Fases 0-12 completadas; Brainstorm v1 operativo en producción**. El E2E real `hermes01 -> main-linux -> Claude/Codex -> hermes01`, el despliegue permanente y el smoke productivo superaron los criterios de aceptación el 2026-09-24. La revisión productiva final es `569eb8c`, incluido el hotfix de límites semánticos de refinement.
 
 Ámbito: `dvk-claude`
 
@@ -1273,9 +1273,61 @@ servicios originales. El estado post-rollback quedó:
 - sin drop-ins de Fase 10 y con `main-linux` nuevamente enrolado;
 - sin push, merge ni modificación de los repos productivos.
 
-Conclusión de Fase 10: los criterios E2E de Brainstorm v1 están verificados. Lo
-único pendiente para activarlo de forma permanente es la revisión humana de la
-rama seguida, si se aprueba, de merge/push y despliegue permanente coordinado.
+Conclusión de Fase 10: los criterios E2E de Brainstorm v1 están verificados.
+
+### Resultado (Fase 12): despliegue permanente y smoke productivo
+
+Fecha: 2026-09-24. Tras aprobación humana explícita:
+
+- se publicó `feat/brainstorm-v1-implementation`;
+- `main` avanzó por fast-forward y se publicó;
+- Controller y worker se desplegaron de forma coordinada, preservando la
+  configuración productiva efectiva de `main-linux` (URL, state file,
+  authorized roots, capabilities y `max_turns=12`);
+- el config productivo añadió únicamente el perfil/task type `brainstorm` a
+  Claude/Codex y el adapter compuesto `brainstorm`.
+
+El primer smoke productivo, job
+`6ac83bfc-2997-4302-9f3c-70a51c623ce9`, recorrió correctamente proposals,
+evaluations y ranking, pero terminó `FAILED` en `claude-refinement`. La
+causa fue semántica, no de transporte ni sandbox: dos outputs estructuralmente
+válidos devolvieron títulos de 126 y 133 caracteres, mientras
+`validate_refinement` exige un máximo de 120. Todos los demás campos de ambas
+salidas estaban dentro de sus límites. El retry era ciego porque el task prompt
+no explicitaba esos límites.
+
+Se implementó el hotfix `569eb8c`:
+
+- el prompt de refinement declara los límites semánticos ya existentes:
+  title <=120, concept <=4000, pilot_definition <=2000,
+  success_criterion <=1000; las tres listas admiten hasta 10 items de <=500;
+- no cambian schemas, ranking, retry budget, checkpoints, aislamiento ni
+  contrato de artifacts;
+- se añadió una regresión TDD y la suite quedó en **558 passed**, además de
+  `compileall` y `git diff --check`.
+
+Tras desplegar `569eb8c` en Controller y worker, el segundo smoke productivo,
+job `0fec7b57-bbf5-442d-9069-2793e8970332`, terminó:
+
+- `DONE / RECOMMENDED_FOR_PILOT`, `attempt=1`, `gate=null`;
+- seis llamadas reales, cero retries, `stage_retries={}`;
+- ganadora `C01` (Codex), final 77.5, confianza `MEDIUM`;
+- tres sondas Codex `PASS`, 35 checks cada una y cero fallos;
+- once artifacts con bytes/SHA-256 recalculados y coincidentes;
+- `brainstorm-report.md` inline de 23621 bytes;
+- fingerprint del repo exactamente igual al baseline, HEAD
+  `815a871b350cbfa26cc143e3822fe9d35e08ce00`.
+
+Como validación específica del fallo original, se ejecutó además **una sola
+llamada real Claude-refinement** con los mismos inputs del job fallido y el
+prompt corregido. Usó el CLI productivo, `max_turns=12`, devolvió un título de
+111 caracteres y `validate_refinement` lo aceptó en la primera llamada.
+
+El proyecto temporal del smoke se retiró del registry al terminar. Los jobs y
+runtimes de evidencia se conservan para trazabilidad.
+
+Conclusión de Fase 12: Brainstorm v1 queda **operativo en producción** en
+`569eb8c`, manteniendo `balanced-v1` sin selección automática de Brainstorm.
 
 Los motores existentes, tasks sin `execution_engine`, resultados heredados,
 artefactos existentes y `HybridAdapter` conservan su comportamiento.
@@ -1349,9 +1401,7 @@ Los tres documentos canónicos se actualizaron tras el E2E distribuido:
 - `docs/hermes-project-registry.md`
 - `docs/hermes-claude-integration.md`
 
-El estado operativo preciso es: **Brainstorm v1 está E2E-verificado pero no
-está desplegado permanentemente en producción**. El siguiente gate humano es
-autorizar o rechazar el merge/push y el despliegue permanente coordinado.
+Estado operativo: **Brainstorm v1 está desplegado permanentemente y validado en producción** en `569eb8c`. Se mantiene explicit-only; `balanced-v1` no lo selecciona automáticamente.
 
 ## Criterios de aceptación
 
@@ -1390,4 +1440,4 @@ propio; `balanced-v2` queda aplazado.
 9. Smoke real local en `main-linux`. HECHO.
 10. E2E distribuido con aprobación de despliegue temporal. HECHO.
 11. Actualización de los tres documentos canónicos y cierre documental. HECHO.
-12. Revisión humana final, merge/push y despliegue permanente coordinado. PENDIENTE DE GATE HUMANO.
+12. Revisión humana final, merge/push, despliegue permanente, hotfix y smoke productivo. HECHO (`569eb8c`).

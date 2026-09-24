@@ -165,14 +165,20 @@ ejecuciones previas, credenciales y sesiones no forman parte de los roots del
 modelo.
 
 El E2E distribuido real se verificó el 2026-09-24 con Controller temporal en
-`hermes01` y worker temporal `main-linux-phase10`, ambos en el commit
-`4ffb37f`. El job `9b232816-2863-46ca-9202-4ac09d165068` terminó
+`hermes01` y worker temporal `main-linux-phase10`, ambos en `4ffb37f`. Tras la
+aprobación humana, Brainstorm v1 se fusionó y desplegó permanentemente. El
+primer smoke productivo (`6ac83bfc-2997-4302-9f3c-70a51c623ce9`) detectó un
+fallo semántico reproducible: Claude refinement devolvió dos títulos de 126 y
+133 caracteres cuando el validador exigía <=120; el retry era válido pero el
+prompt no explicitaba el límite. El hotfix `569eb8c` añadió todos los límites
+semánticos de refinement al task prompt, con regresión dedicada (558 tests).
+
+El segundo smoke productivo (`0fec7b57-bbf5-442d-9069-2793e8970332`) terminó
 `DONE / RECOMMENDED_FOR_PILOT`, con seis llamadas reales, cero reintentos,
-tres sondas Codex `PASS` (35 checks cada una), Claude limitado a
-`Read/Glob/Grep`, once artefactos verificados y fingerprint Git idéntico. Tras
-la prueba se retiraron los overrides temporales y producción volvió a sus
-revisiones anteriores; Brainstorm está E2E-verificado pero pendiente de
-merge/push y despliegue permanente.
+tres sondas Codex `PASS` (35 checks cada una), once artefactos verificados y
+fingerprint Git idéntico. Una llamada Claude-refinement dirigida sobre los
+inputs del fallo original produjo después un título válido de 111 caracteres
+con `max_turns=12`. Brainstorm v1 queda operativo en producción en `569eb8c`.
 
 ## Secuencia de implementación
 
@@ -187,5 +193,5 @@ merge/push y despliegue permanente.
 9. Brainstorm v1 explicit-only: contrato, core, aislamiento Claude/Codex, adapter y worker multi-engine. HECHO.
 10. Integración local con fakes y smoke real local Claude+Codex. HECHO.
 11. E2E distribuido Brainstorm `hermes01 -> main-linux -> hermes01`. HECHO.
-12. Merge/push y despliegue permanente de Brainstorm v1. PENDIENTE DE APROBACIÓN HUMANA.
+12. Merge/push, despliegue permanente y smoke productivo de Brainstorm v1. HECHO; hotfix de refinement incluido en `569eb8c`.
 13. Cualquier selección automática de Brainstorm o `balanced-v2`. FUERA DE v1 / APLAZADO.

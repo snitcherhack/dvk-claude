@@ -168,9 +168,12 @@ routing and final report generation. A final validation `PASS` yields
 `DONE / RECOMMENDED_FOR_PILOT`; `FAIL` yields `DONE / INCONCLUSIVE`.
 Neither outcome starts a pilot automatically.
 
-The distributed E2E for Brainstorm v1 passed on 2026-09-24. The implementation
-is therefore E2E-verified, but at the time of this document update it remains on
-the feature branch and is not yet permanently deployed in production.
+Brainstorm v1 passed its distributed E2E on 2026-09-24 and is now permanently
+deployed on the production Controller and `main-linux` worker. The production
+post-deploy smoke `0fec7b57-bbf5-442d-9069-2793e8970332` completed `DONE /
+RECOMMENDED_FOR_PILOT` with six model calls, zero retries, eleven verified
+artifacts and an unchanged repository fingerprint. `brainstorm` remains
+explicit-only and is still forbidden as a project default.
 
 ## Inline task materialization
 
