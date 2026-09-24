@@ -1111,11 +1111,22 @@ Resultados verificados:
   motores; artefactos inválidos terminan en un envelope `FAILED` aceptado sin
   bucle; el Controller rechaza un envelope Brainstorm con `engine=codex`.
 
-Hallazgo preexistente (no corregido en esta fase): el Controller acepta un
-`runtime_directory` dentro de `working_directory`, y el worker materializa
-`hermes-task.md` ahí antes de que `BrainstormAdapter` bloquee, dejando un
-fichero no trackeado en el repo. Propuesta: rechazarlo en la validación del
-manifest.
+Hallazgo de la Fase 8, cerrado en la Fase 8.1: el Controller aceptaba un
+`runtime_directory` dentro de `working_directory` y el worker materializaba
+`hermes-task.md` ahí antes de que `BrainstormAdapter` bloqueara, dejando un
+fichero no trackeado en el repo. Ahora hay dos capas, válidas para todos los
+motores:
+
+- Controller (`_validate_project`, plataforma `linux`): con
+  `posixpath.normpath` de ambas rutas, se rechaza el manifest si
+  `runtime_directory == working_directory` o si `runtime_directory` empieza por
+  `working_directory + "/"`. Un runtime padre del repo o hermano sigue siendo
+  válido. Los ocho manifests de `config/hermes-projects/` siguen validando.
+- Worker (`_materialize_inline_task`): antes de crear directorios o escribir,
+  resuelve `run_output_dir` y `working_directory` (siguiendo symlinks) y
+  bloquea si el primero es el repo o está dentro de él. El resultado es
+  `BLOCKED` sin crear nada, también para tasks de un Controller antiguo o
+  construidos a mano.
 
 Brainstorm sigue implementado y experimental: pendiente del smoke real con
 ambos motores y del E2E distribuido.

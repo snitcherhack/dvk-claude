@@ -216,6 +216,13 @@ class WorkerDaemon:
             raise ValueError("inline task materialization is not configured")
         if not any(target_dir == root or root in target_dir.parents for root in self.task_materialization_roots):
             raise ValueError("run_output_dir is outside task materialization roots")
+        working_directory = task.get("working_directory")
+        if isinstance(working_directory, str) and working_directory:
+            # Defense in depth for tasks from older Controllers or built by hand:
+            # never write the inline task into the repository.
+            working = Path(working_directory).resolve()
+            if target_dir == working or working in target_dir.parents:
+                raise ValueError("run_output_dir must be outside working_directory")
         brain = task.get("brain")
         if not isinstance(brain, dict):
             raise ValueError("inline task requires brain metadata")

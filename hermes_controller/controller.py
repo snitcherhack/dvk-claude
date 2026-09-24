@@ -8,6 +8,7 @@ import sqlite3
 import uuid
 import hashlib
 import hmac
+import posixpath
 import re
 from pathlib import Path
 from typing import Any
@@ -525,6 +526,13 @@ class Controller:
             for key in ("working_directory", "runtime_directory"):
                 if not manifest[key].startswith("/"):
                     raise ControllerError(f"{key} must be an absolute Linux path")
+            # Inline task runtimes are materialized under runtime_directory: it must
+            # never be the repository or a path inside it. Lexical check only; the
+            # worker re-checks with resolved paths before writing anything.
+            working = posixpath.normpath(manifest["working_directory"])
+            runtime = posixpath.normpath(manifest["runtime_directory"])
+            if runtime == working or runtime.startswith(working.rstrip("/") + "/"):
+                raise ControllerError("runtime_directory must be outside working_directory")
         engines = manifest["allowed_engines"]
         if (
             not isinstance(engines, list)

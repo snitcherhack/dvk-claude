@@ -30,7 +30,7 @@ from hermes_controller.api import serve
 from hermes_controller.artifacts import validate_artifacts
 from hermes_controller.brainstorm import BrainstormAdapter, repo_fingerprint
 from hermes_controller.clock import FakeClock
-from hermes_controller.controller import LEASE_DURATION_MS, Controller
+from hermes_controller.controller import LEASE_DURATION_MS, Controller, ControllerError
 from hermes_controller.worker import TransportError, WorkerDaemon
 
 QUESTION = "Propose three ways to improve the developer onboarding documentation for this test repository."
@@ -419,19 +419,24 @@ def test_auto_and_default_never_select_brainstorm(env, instruction):
 
 # --- rejections ---------------------------------------------------------------------------------------------------------
 
-def test_run_output_inside_repo_is_blocked_before_engines(env, monkeypatch):
+def test_runtime_inside_repo_is_rejected_before_anything_is_written(env, monkeypatch):
+    fingerprint_before = repo_fingerprint(env.repo)
     runtime_in_repo = env.repo / "hermes-runtime"
-    runtime_in_repo.mkdir()
-    monkeypatch.setenv("HERMES_TASK_ROOTS_IT", str(runtime_in_repo))
-    job_id, _task = env.enqueue_brainstorm(runtime_directory=str(runtime_in_repo))
+    with pytest.raises(ControllerError, match="runtime_directory"):
+        env.controller.register_project(env.manifest(runtime_directory=str(runtime_in_repo)))
+
+    # A task that bypasses the manifest check (older Controller or manual task) is stopped by the worker.
+    env.controller.register_project(env.manifest())
+    task = env.controller.build_project_task("onboarding-docs", QUESTION, engine="brainstorm")
+    task["run_output_dir"] = str(runtime_in_repo / task["job_id"])
+    monkeypatch.setenv("HERMES_TASK_ROOTS_IT", f"{env.task_runtime}:{env.repo}")
+    job_id = env.controller.enqueue(task)
     env.worker().once()
     status = env.controller.status(job_id)
-    assert status["state"] == "BLOCKED" and "outside working_directory" in status["result"]["summary"]
-    assert env.fleet.calls == []
-    # Pre-existing behaviour recorded, not fixed here: the Controller accepts a runtime_directory inside
-    # working_directory and the worker materializes the inline task there before BrainstormAdapter blocks.
-    assert (runtime_in_repo / job_id / "hermes-task.md").is_file()
-    assert not (runtime_in_repo / job_id / "orchestration").exists()
+    assert status["state"] == "BLOCKED" and "working_directory" in status["result"]["summary"]
+    assert env.fleet.calls == [] and env.fleet.brainstorm_tasks == []
+    assert not runtime_in_repo.exists()
+    assert repo_fingerprint(env.repo) == fingerprint_before
 
 
 class InvalidArtifactsBrainstorm:
