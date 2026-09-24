@@ -131,3 +131,60 @@ def test_boundary_violation_becomes_blocked_result(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="working_directory"):
         daemon._prepare_task(claim)
     assert list(repo.iterdir()) == []
+
+
+# --- inline tasks without working_directory fail closed ------------------------------------------------------------
+
+@pytest.mark.parametrize("working_directory", [None, "", 7])
+def test_inline_task_without_working_directory_writes_nothing(tmp_path, monkeypatch, working_directory):
+    runtime = tmp_path / "runtime"
+    daemon = worker(tmp_path, monkeypatch, runtime)
+    task = inline_task(tmp_path / "repo", runtime / "job")
+    if working_directory is None:
+        task.pop("working_directory")
+    else:
+        task["working_directory"] = working_directory
+    with pytest.raises(ValueError, match="inline tasks require working_directory"):
+        daemon._materialize_inline_task(task)
+    assert not (runtime / "job").exists()
+    assert not (runtime / "job" / "hermes-task.md").exists()
+    claim = {"job_id": "j", "run_id": "r", "attempt": 1, "lease_id": "l", "lease_token": "t", "task": task}
+    with pytest.raises(ValueError, match="inline tasks require working_directory"):
+        daemon._prepare_task(claim)
+    assert not runtime.exists() or list(runtime.iterdir()) == []
+
+
+def test_once_blocks_inline_task_without_working_directory_without_calling_adapter(tmp_path, monkeypatch):
+    import threading
+
+    from hermes_controller.api import serve
+
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("HERMES_TASK_ROOTS_BOUNDARY", str(runtime))
+    controller = Controller(tmp_path / "controller")
+    server = serve(controller, port=0, enrollment_tokens={"main-linux": "boundary-token"})
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    calls = []
+    try:
+        daemon = WorkerDaemon({"controller_url": f"http://127.0.0.1:{server.server_port}", "token": "boundary-token",
+                               "state_file": str(tmp_path / "state.json"), "heartbeat_interval_ms": 10,
+                               "task_materialization_roots_env": "HERMES_TASK_ROOTS_BOUNDARY", "worker": WORKER},
+                              adapter=type("Spy", (), {"execute": lambda self, task: calls.append(task) or AdapterResult()})())
+        daemon.register()
+        task = inline_task(tmp_path / "repo", runtime / "job")
+        task.pop("working_directory")
+        task.update({"project": "sample", "repository": "git@example/sample.git", "ref": "main",
+                     "task_type": "development", "platform": "linux", "required_capabilities": ["codex"],
+                     "execution_profile": "hermes", "human_gates": [], "idempotency_policy": "safe_retry"})
+        job_id = controller.enqueue(task)
+        assert daemon.once()
+        status = controller.status(job_id)
+        assert status["state"] == "BLOCKED"
+        assert "inline tasks require working_directory" in status["result"]["summary"]
+        assert calls == []
+        assert not (runtime / "job").exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        controller.close()

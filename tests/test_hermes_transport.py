@@ -234,6 +234,7 @@ def test_worker_materializes_inline_task_inside_configured_root(api, monkeypatch
             "commit": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         },
         "task_text": text,
+        "working_directory": str(root / "repo"),
         "run_output_dir": str(material_root / "inline-job"),
         "allowed_paths": [str(material_root)],
         "execution_engine": "codex",
