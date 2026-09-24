@@ -10,6 +10,7 @@ Este documento define quién habla con quién en Hermes y dónde vive el estado.
 - Los workers reclaman trabajo del Controller.
 - Codex y Claude son motores de ejecución; no hablan directamente entre sí.
 - Hybrid es una orquestación de Hermes entre Claude y Codex.
+- Brainstorm es una orquestación explícita de Hermes para propuestas independientes, evaluación cruzada, ranking determinista, refinamiento y validación.
 - Desktop Commander es un canal administrativo, no el camino normal de los jobs.
 
 ## Componentes actuales
@@ -24,6 +25,7 @@ Este documento define quién habla con quién en Hermes y dónde vive el estado.
 | Codex | ejecutado desde `main-linux` | Implementación, bugs, tests y cambios de código |
 | Claude | ejecutado desde `main-linux` | Análisis, arquitectura, investigación y planificación |
 | Hybrid | adapter de Hermes | Claude -> Codex review -> posible Claude fix |
+| Brainstorm | adapter de Hermes | Codex + Claude proponen y evalúan de forma aislada; Hermes rankea, refina y valida |
 | `windows-render` | worker Windows declarado y deshabilitado | Render/QA final cuando se habilite |
 | Desktop Commander | canal remoto de administración | Diagnóstico, reparación y mantenimiento |
 
@@ -51,14 +53,14 @@ Job QUEUED
 main-linux
   |
   | execution_engine
-  +--------------+--------------+
-  |              |              |
-  v              v              v
-Codex          Claude         Hybrid
-  |              |              |
-  +--------------+--------------+
-                 |
-                 | resultado normalizado
+  +--------------+--------------+--------------+
+  |              |              |              |
+  v              v              v              v
+Codex          Claude         Hybrid       Brainstorm
+  |              |              |              |
+  +--------------+--------------+--------------+
+                         |
+                         | resultado normalizado
                  v
          Hermes Controller
                  |
@@ -109,7 +111,7 @@ cambios críticos / migraciones             -> Hybrid
 tarea neutra                                -> Codex
 ```
 
-Una selección explícita `--engine codex|claude|hybrid|native` tiene precedencia, siempre que el proyecto permita ese motor.
+Una selección explícita `--engine codex|claude|hybrid|native|brainstorm` tiene precedencia, siempre que el proyecto permita ese motor. `brainstorm` es **explicit-only**: puede figurar en `allowed_engines`, pero no puede ser `default_engine` y `balanced-v1` nunca lo selecciona automáticamente.
 
 ### Limitación conocida del routing
 
@@ -169,6 +171,38 @@ Codex: review read-only
 ```
 
 Hybrid es por tanto una state machine de Hermes. El adapter limita las rondas y conserva evidencia del flujo.
+
+## Cómo funciona Brainstorm
+
+Brainstorm también es una state machine de Hermes, pero no sigue la semántica implementación/review/fix de Hybrid. En v1 solo se activa de forma explícita y el repositorio permanece read-only:
+
+```text
+Hermes
+  |
+  +--> Codex: propuestas independientes
+  |
+  +--> Claude: propuestas independientes
+  |
+  +--> Hermes: anonimiza candidatas
+  |
+  +--> Claude: evaluación
+  |
+  +--> Codex: evaluación
+  |
+  +--> Hermes: ranking determinista + confianza
+  |
+  +--> autor de la ganadora: refinement
+  |
+  +--> otro motor: validation
+  |
+  +--> Hermes: report + artifacts
+```
+
+Los motores no ven la salida del otro durante proposals y ambos evaluadores reciben exactamente el mismo bundle anonimizado. Hermes calcula el ranking y registra el posible sesgo de autopuntuación; los modelos no deciden el orden final.
+
+Una validación final `PASS` produce `DONE / RECOMMENDED_FOR_PILOT`. Una validación `FAIL` produce `DONE / INCONCLUSIVE`; no se cambia automáticamente a la segunda candidata. Construir el piloto siempre requiere una tarea posterior.
+
+Brainstorm v1 superó el 24 de septiembre de 2026 un E2E distribuido real `hermes01 -> main-linux -> Claude/Codex -> hermes01` con seis llamadas reales, cero reintentos, once artefactos verificados y huella Git idéntica. La rama de implementación aún no está fusionada ni desplegada permanentemente: la infraestructura productiva fue restaurada a sus revisiones anteriores tras la prueba.
 
 ## Estado compartido
 
@@ -291,7 +325,8 @@ El sistema ya ha demostrado:
 
 - jobs creados y persistidos por el Controller;
 - `main-linux` ONLINE y reclamando jobs;
-- ejecuciones reales Codex, Claude y Hybrid;
+- ejecuciones reales Codex, Claude, Hybrid y Brainstorm;
+- Brainstorm distribuido real con Controller en `hermes01`, worker en `main-linux`, seis llamadas Claude/Codex, cero reintentos, once artefactos verificados y repo sin cambios;
 - resultados terminales `DONE` y `FAILED`;
 - selección automática `balanced-v1`;
 - una tarea enviada desde Telegram que recorrió la cola real hasta `main-linux`;
@@ -307,3 +342,4 @@ Una ejecución `FAILED` no implica un fallo de transporte. El job read-only que 
 4. Mantener el gateway como interfaz y el Controller como autoridad de estado.
 5. Habilitar `windows-render` sólo cuando su flujo y gates estén probados.
 6. Mantener trazabilidad de engine, worker, run, evidencia y resultado en cada delegación.
+7. Tras revisión humana, fusionar y desplegar permanentemente Brainstorm v1; hasta entonces el E2E está verificado pero producción sigue en las revisiones anteriores.

@@ -12,14 +12,15 @@ Code y Codex no controlan la cola, las leases ni el estado global.
 
 `execution_engine` es opcional para mantener compatibilidad con tareas existentes.
 Si falta, una tarea que requiera `codex` se interpreta como `codex`; las demás
-se consideran `native`. Las nuevas tareas Claude/híbridas deben declararlo de
-forma explícita.
+se consideran `native`. Las nuevas tareas Claude, Hybrid y Brainstorm deben
+declararlo de forma explícita.
 
 Valores reservados:
 
 - `codex`: ejecución directa con Codex.
 - `claude`: ejecución con Claude Agent SDK.
 - `hybrid`: flujo combinado Claude + Codex.
+- `brainstorm`: propuestas independientes Claude/Codex, evaluación cruzada y decisión determinista de Hermes.
 - `native`: ejecución no-LLM propia del worker, por ejemplo render/QA de Windows.
 
 Cuando se declara el motor explícitamente, `required_capabilities` debe contener:
@@ -27,6 +28,7 @@ Cuando se declara el motor explícitamente, `required_capabilities` debe contene
 - `codex` -> `codex`
 - `claude` -> `claude`
 - `hybrid` -> `codex` y `claude`
+- `brainstorm` -> `codex` y `claude`
 - `native` -> las capabilities específicas de la tarea
 
 Esto impide que un worker reclame una tarea para un motor que no anuncia.
@@ -41,7 +43,9 @@ Ejemplo conceptual:
     "default_execution_engine": "codex",
     "adapters": {
       "codex": {"kind": "codex-run", "...": "..."},
-      "claude": {"kind": "claude-agent", "...": "..."}
+      "claude": {"kind": "claude-agent", "...": "..."},
+      "hybrid": {"kind": "hybrid", "primary_engine": "claude", "review_engine": "codex"},
+      "brainstorm": {"kind": "brainstorm", "claude_engine": "claude", "codex_engine": "codex"}
     }
 
 
@@ -68,6 +72,8 @@ El smoke genérico crea su repositorio desechable dentro del propio
 `run_output_dir`; no depende de `WINNER_TIMELINE_QA_DIR` ni de un proyecto
 concreto.
 
+Para `execution_profile=brainstorm`, Codex no usa el sandbox read-only genérico. El runner construye un permission profile efímero con el `bwrap` integrado de Codex, `env -i`, red de herramientas aislada y una sonda fail-closed antes de cada llamada. El repositorio y `request/` son read-only, la llamada actual es el único root escribible y `orchestration/`, auth, sesiones, sibling stages y ejecuciones anteriores permanecen ocultos. El structured output solo acepta los cuatro schemas versionados `proposals`, `evaluation`, `refinement` y `validation`.
+
 El tipo `claude-agent` ya está implementado de forma fail-closed y con carga
 perezosa del SDK. Puede construirse aunque el SDK aún no esté instalado; una
 ejecución real queda `BLOCKED` hasta que `main-linux` tenga Claude Agent SDK y
@@ -78,6 +84,7 @@ Perfiles iniciales:
 - `claude_smoke`: solo `Read`, `Glob` y `Grep`.
 - `hermes`: añade `Write` y `Edit`, pero mantiene `Bash` y herramientas de red
   deshabilitadas hasta disponer de una política específica para comandos.
+- `brainstorm`: structured output y solo `Read`, `Glob` y `Grep`; cada etapa recibe roots mínimos `[repo, request, execution]` y no puede escribir en el proyecto.
 
 Todas las herramientas de ruta pasan por un hook `PreToolUse` que deniega
 accesos fuera de `authorized_roots`. Cuando Claude Code se ejecuta desde Windows
@@ -94,9 +101,14 @@ API o proveedores cloud. No se bloquean credenciales OAuth de la suscripción.
 En modo de suscripción, el adapter requiere además un `cli_path` explícito hacia
 un Claude Code ya autenticado. El SDK incluye su propio CLI, pero no se asume
 que comparta la sesión OAuth del CLI interactivo del usuario. La configuración
-del worker expone ese binario mediante `cli_path_env`. En `main-linux` se usa el
-binario nativo WSL `/home/deiv/.local/bin/claude`, autenticado mediante
-`claude.ai`; ya no se depende del ejecutable de Windows para el daemon.
+del worker expone ese binario mediante `cli_path_env`. El servicio productivo
+restaurado sigue usando el binario nativo WSL `/home/deiv/.local/bin/claude`
+(2.1.267 en la verificación de 2026-09-24). Para los smokes Brainstorm y el E2E
+distribuido se fijó explícitamente el CLI empaquetado por el SDK,
+`/home/deiv/.local/share/dvk-hermes/python/claude_agent_sdk/_bundled/claude`
+(2.1.276), evitando cualquier wrapper de Windows o resolución ambigua de
+`PATH`. Ambos usan la sesión `claude.ai`; el daemon no depende del ejecutable de
+Windows.
 
 El adapter exige `claude-agent-sdk >= 0.2.140`; la validación real se completó
 con `0.2.156`. El mínimo se fija porque necesitamos hooks `PreToolUse`,
@@ -127,6 +139,41 @@ revisión, rescue y transfer interactivos. Esto evita que el daemon dependa de
 prompts slash o decisiones interactivas del plugin, pero conserva la colaboración
 Claude <-> Codex para sesiones humanas y para futuras extensiones controladas.
 
+## Modo Brainstorm
+
+`BrainstormAdapter` compone los adapters estructurados reales de Claude y Codex,
+pero Hermes conserva toda la coordinación. El flujo normal realiza seis llamadas:
+
+```text
+Codex proposals
+Claude proposals
+Claude evaluation
+Codex evaluation
+winner-author refinement
+other-engine validation
+```
+
+Las propuestas se generan de forma independiente; las evaluaciones consumen el
+mismo bundle anonimizado. El ranking, desempates, confianza y marca de
+autopreferencia se calculan en código determinista. Los outputs válidos se
+checkpointan para que un nuevo attempt pueda reutilizarlos sin repetir llamadas.
+
+Cada stage separa `request/` read-only de
+`executions/call-NNNN/`. Codex puede escribir únicamente en la ejecución
+actual; Claude mantiene herramientas de lectura. `orchestration/`, otras etapas,
+ejecuciones previas, credenciales y sesiones no forman parte de los roots del
+modelo.
+
+El E2E distribuido real se verificó el 2026-09-24 con Controller temporal en
+`hermes01` y worker temporal `main-linux-phase10`, ambos en el commit
+`4ffb37f`. El job `9b232816-2863-46ca-9202-4ac09d165068` terminó
+`DONE / RECOMMENDED_FOR_PILOT`, con seis llamadas reales, cero reintentos,
+tres sondas Codex `PASS` (35 checks cada una), Claude limitado a
+`Read/Glob/Grep`, once artefactos verificados y fingerprint Git idéntico. Tras
+la prueba se retiraron los overrides temporales y producción volvió a sus
+revisiones anteriores; Brainstorm está E2E-verificado pero pendiente de
+merge/push y despliegue permanente.
+
 ## Secuencia de implementación
 
 1. Routing multi-engine y validación de capabilities. HECHO.
@@ -136,5 +183,9 @@ Claude <-> Codex para sesiones humanas y para futuras extensiones controladas.
 5. `HybridAdapter`: Claude implementa y Codex revisa en read-only. HECHO; E2E distribuido DONE.
 6. Claude Code nativo en WSL. HECHO; OAuth `claude.ai` validado y usado por el worker.
 7. `codex-plugin-cc` nativo en WSL. HECHO; setup y review backend E2E completados.
-8. Consolidar la feature branch y desplegar la misma versión en Controller y worker. HECHO en `main`.
-9. Añadir política automática de selección de motor solo después de estabilizar los tres modos.
+8. Consolidación previa multi-engine en `main`. HECHO.
+9. Brainstorm v1 explicit-only: contrato, core, aislamiento Claude/Codex, adapter y worker multi-engine. HECHO.
+10. Integración local con fakes y smoke real local Claude+Codex. HECHO.
+11. E2E distribuido Brainstorm `hermes01 -> main-linux -> hermes01`. HECHO.
+12. Merge/push y despliegue permanente de Brainstorm v1. PENDIENTE DE APROBACIÓN HUMANA.
+13. Cualquier selección automática de Brainstorm o `balanced-v2`. FUERA DE v1 / APLAZADO.

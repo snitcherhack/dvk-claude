@@ -2,9 +2,7 @@
 
 Fecha: 2026-09-23
 
-Estado: diseño revisado (Fase 0). Decisiones humanas incorporadas; pendiente de
-revisión antes de la Fase 1. Brainstorm **no es operativo** hasta superar el
-E2E real descrito en "Despliegue y E2E".
+Estado: **Fases 0-11 completadas; implementación y E2E distribuido verificados**. El E2E real `hermes01 -> main-linux -> Claude/Codex -> hermes01` superó los criterios de aceptación el 2026-09-24 y la documentación canónica quedó actualizada. La rama sigue pendiente de revisión humana, merge/push y despliegue permanente; tras el E2E se restauraron las revisiones productivas anteriores.
 
 Ámbito: `dvk-claude`
 
@@ -1128,14 +1126,14 @@ motores:
   `BLOCKED` sin crear nada, también para tasks de un Controller antiguo o
   construidos a mano.
 
-Brainstorm sigue implementado y experimental: pendiente del smoke real con
-ambos motores y del E2E distribuido.
+Estado al cierre de la Fase 8.1: implementación completa a nivel de código,
+pendiente todavía del smoke real con ambos motores y del E2E distribuido.
 
 ### Resultado (Fase 9): smoke real local con Claude y Codex
 
 Fecha: 2026-09-24, `main-linux`, rama `feat/brainstorm-v1-implementation` en
-`475d267`. Estado: **implementado + smoke real local superado + pendiente
-del E2E distribuido**. No es operativo.
+`475d267`. Estado en ese checkpoint: **implementado + smoke real local
+superado + pendiente del E2E distribuido**.
 
 Entorno, todo con rutas explícitas (sin depender del `PATH`):
 
@@ -1200,6 +1198,85 @@ Observaciones y limitaciones:
 - La confianza quedó en `MEDIUM` y el evaluador Codex mostró un sesgo de
   autopuntuación de 20.5 puntos; el informe lo expone sin cambiar el ranking.
 
+### Resultado (Fase 10): E2E distribuido real
+
+Fecha: 2026-09-24. La aprobación humana para el despliegue temporal se obtuvo
+antes de modificar servicios.
+
+Se verificó primero el estado real de ambos nodos. La rama
+`feat/brainstorm-v1-implementation` estaba limpia en `4ffb37f`; `hermes01`
+estaba limpio en `main` `3fcb476` y `main-linux` conservaba su `main`
+local `67a1d4e` (dos commits por delante de `origin/main`). No había jobs
+`RUNNING` ni `QUEUED` ni state file activo del worker.
+
+El código se transportó sin push mediante un `git bundle` temporal, verificado
+byte a byte por SHA-256 y `git bundle verify`, y se importó en un worktree
+independiente de `hermes01`:
+`/home/snitcher/Proyectos/dvk-claude-brainstorm-phase10`. No se modificó el
+checkout `main`.
+
+Para minimizar riesgo, el despliegue usó overrides systemd temporales y
+reversibles:
+
+- Controller feature en `hermes01`, commit `4ffb37f`, puerto 8787, pero con
+  runtime y SQLite separados bajo
+  `/home/snitcher/.local/state/dvk-hermes-controller-phase10`.
+- Worker feature en `main-linux`, commit `4ffb37f`, id
+  `main-linux-phase10`, config/state separados y los mismos EnvironmentFile
+  privados de autenticación, sin leer ni copiar tokens.
+- Repo de prueba inocuo
+  `/home/deiv/Proyectos/hermes-phase10-smoke-repo`, HEAD
+  `815a871b350cbfa26cc143e3822fe9d35e08ce00`, con solo `README.md` y
+  `docs/onboarding.md`.
+- Runtime del proyecto fuera del repo:
+  `/home/deiv/.local/state/dvk-hermes-projects/phase10-brainstorm-e2e`.
+
+Job distribuido:
+
+- `job_id=9b232816-2863-46ca-9202-4ac09d165068`;
+- `run_id=c2f47dfa-e07b-4755-be86-0915459fcd9b`;
+- worker `main-linux-phase10`;
+- `attempt=1`, sin requeue ni segundo run;
+- seis llamadas reales, `model_calls=6`, `retries_used=0`,
+  `stage_retries={}`, presupuesto global 1200 s;
+- resultado `DONE / RECOMMENDED_FOR_PILOT`, `gate=null`,
+  `active_run_id=null`.
+
+Decisión del run:
+
+- ganadora `C02`, autor Codex, “Make the test instruction actionable and
+  honest”;
+- final 81 (Claude 76.5, Codex 85.5, desacuerdo 9);
+- runner-up `C01`, margen 2.75;
+- confianza `MEDIUM`, base `MEDIUM`;
+- autopreferencia Claude -8.75, Codex 17.5, flag activo;
+- validación final `PASS`.
+
+Verificación independiente posterior al ingest:
+
+- fingerprint del repo exactamente igual al baseline, incluido HEAD, status,
+  diff y untracked;
+- las tres sondas Codex dieron `PASS`, 35 checks cada una y cero fallos;
+- Claude usó solo `Read`, `Glob` y `Grep`, `max_turns=6`, sin errores;
+- los once artefactos esperados estaban presentes; bytes y SHA-256 se
+  recalcularon desde disco y coincidieron con `Controller.status()`;
+- `brainstorm-report.md` tenía 22402 bytes y llegó inline exacto;
+- ningún artefacto procedía de `stages/` ni `executions/`.
+
+Tras validar el E2E se retiraron ambos overrides temporales y se reiniciaron los
+servicios originales. El estado post-rollback quedó:
+
+- Controller productivo: `/home/snitcher/Proyectos/dvk-claude`,
+  `main=3fcb476`, DB productiva original;
+- worker productivo: `/home/deiv/Proyectos/dvk-claude`,
+  `main=67a1d4e`;
+- sin drop-ins de Fase 10 y con `main-linux` nuevamente enrolado;
+- sin push, merge ni modificación de los repos productivos.
+
+Conclusión de Fase 10: los criterios E2E de Brainstorm v1 están verificados. Lo
+único pendiente para activarlo de forma permanente es la revisión humana de la
+rama seguida, si se aprueba, de merge/push y despliegue permanente coordinado.
+
 Los motores existentes, tasks sin `execution_engine`, resultados heredados,
 artefactos existentes y `HybridAdapter` conservan su comportamiento.
 `balanced-v1` no cambia.
@@ -1245,40 +1322,36 @@ git diff --check
 
 ## Despliegue y E2E
 
-El E2E real requiere desplegar esta rama en el Controller de `hermes01` y en
-`main-linux` antes del merge, porque cambian Controller, builder y validación.
+Las dos validaciones exigidas están completadas:
 
-**No se despliega el Controller de esta rama sin el worker compatible** (Fase 7).
-Con solo el Controller nuevo, un worker desplegado que anuncie `claude` y
-`codex` reclamaría un job Brainstorm, respondería `BLOCKED` por engine no
-configurado y enviaría el envelope como `codex`; el Controller lo rechazaría
-por engine distinto y el worker lo reintentaría indefinidamente.
-Ese despliegue, y la instalación de `bubblewrap` si llegara a proponerse,
-requieren aprobación humana explícita.
+1. Smoke real local en `main-linux`: PASS (Fase 9).
+2. E2E distribuido `hermes01 -> main-linux -> hermes01`: PASS (Fase 10).
 
-Secuencia:
+El E2E distribuido se hizo únicamente tras aprobación humana y con despliegue
+temporal coordinado de Controller y worker compatibles. Se usaron runtime,
+state, worker id y checkout aislados; al terminar se retiraron los overrides y
+se restauraron los servicios productivos anteriores.
 
-1. Smoke local en `main-linux` con repositorio desechable: cada motor por
-   separado y después el flujo completo, sin red.
-2. E2E distribuido:
-   `Controller hermes01 -> queue -> main-linux -> BrainstormAdapter ->
-   Claude/Codex -> ranking/refine/validate -> ingest -> DONE`, con pregunta
-   inocua, ambos motores autenticados por suscripción, artefactos y hashes
-   publicados, informe inline visible en `Controller.status` y repositorio con
-   huella idéntica.
+La regla de despliegue permanente se mantiene: **Controller y worker Brainstorm
+deben desplegarse de forma coordinada**. No se debe activar un Controller que
+pueda encolar Brainstorm contra un worker que todavía no tenga el adapter
+`brainstorm`.
 
-Solo entonces se documenta Brainstorm como operativo.
+No hace falta instalar `bubblewrap` del sistema: la implementación validada
+usa el `bwrap` integrado de Codex con permission profile efímero y sonda
+fail-closed.
 
 ### Documentación canónica antes del merge
 
-Antes del merge definitivo deben actualizarse:
+Los tres documentos canónicos se actualizaron tras el E2E distribuido:
 
 - `docs/hermes-communication-architecture.md`
 - `docs/hermes-project-registry.md`
 - `docs/hermes-claude-integration.md`
 
-Hasta superar el E2E distribuido, esos documentos describen Brainstorm como
-implementado/experimental o pendiente de E2E, nunca como operativo.
+El estado operativo preciso es: **Brainstorm v1 está E2E-verificado pero no
+está desplegado permanentemente en producción**. El siguiente gate humano es
+autorizar o rechazar el merge/push y el despliegue permanente coordinado.
 
 ## Criterios de aceptación
 
@@ -1305,18 +1378,16 @@ propio; `balanced-v2` queda aplazado.
 
 ## Orden de implementación
 
-0. Este documento.
-1. Contrato y Controller: engine, enums, validación de manifest, builder y CLI.
-2. `AdapterResult.artifacts/hashes`, modelo de artefacto e `inline_text`.
-3. Núcleo determinista sin I/O.
-4. Claude: perfil `brainstorm` y ejecución estructurada por etapa.
-5. Runner Codex: Spike 5A de aislamiento y, después, perfil `brainstorm`,
-   `--stage-schema`, permission profile, `env -i` y sonda fail-closed (5B).
-6. `BrainstormAdapter`: layout, roots, baseline, huella, checkpoints,
-   presupuesto y estados.
-7. Worker: `kind: brainstorm` y `main-linux.json` multi-engine.
-8. Integración local Controller + worker con motores falsos.
-9. Smoke real en `main-linux`.
-10. E2E distribuido con aprobación de despliegue.
-11. Actualización de los tres documentos canónicos (experimental hasta el E2E)
-    antes del merge.
+0. Diseño y decisiones humanas. HECHO.
+1. Contrato y Controller: engine, enums, validación de manifest, builder y CLI. HECHO.
+2. `AdapterResult.artifacts/hashes`, modelo de artefacto e `inline_text`. HECHO.
+3. Núcleo determinista sin I/O. HECHO.
+4. Claude: perfil `brainstorm` y ejecución estructurada por etapa. HECHO.
+5. Runner Codex: Spike 5A + perfil `brainstorm`, `--stage-schema`, permission profile, `env -i` y sonda fail-closed. HECHO.
+6. `BrainstormAdapter`: layout, roots, baseline, huella, checkpoints, presupuesto y estados. HECHO.
+7. Worker: `kind: brainstorm` y `main-linux.json` multi-engine. HECHO.
+8. Integración local Controller + worker con motores falsos y hardening de runtime. HECHO.
+9. Smoke real local en `main-linux`. HECHO.
+10. E2E distribuido con aprobación de despliegue temporal. HECHO.
+11. Actualización de los tres documentos canónicos y cierre documental. HECHO.
+12. Revisión humana final, merge/push y despliegue permanente coordinado. PENDIENTE DE GATE HUMANO.

@@ -18,7 +18,7 @@ Example for a Linux project on `main-linux`:
   "worker_id": "main-linux",
   "working_directory": "/home/deiv/Proyectos/example-api",
   "runtime_directory": "/home/deiv/.local/state/dvk-hermes-projects/example-api",
-  "allowed_engines": ["codex", "claude", "hybrid"],
+  "allowed_engines": ["codex", "claude", "hybrid", "brainstorm"],
   "default_engine": "auto",
   "engine_policy": "balanced-v1",
   "capabilities": ["git", "python", "tests"],
@@ -33,8 +33,11 @@ Example for a Linux project on `main-linux`:
 
 `working_directory` is the repository checkout on the target worker.
 `runtime_directory` is scratch/state space for immutable task snapshots and
-run outputs. A project may optionally add more task-scoped `allowed_paths`, but
-the worker still applies its own maximum authorized roots.
+run outputs. For Linux projects it must be outside `working_directory`; the
+Controller rejects equal/descendant runtime paths lexically and the worker
+re-checks resolved paths before materializing an inline task. A project may
+optionally add more task-scoped `allowed_paths`, but the worker still applies
+its own maximum authorized roots.
 
 `worker_id` is optional. When present, only that worker may claim the task even
 if another worker advertises the same platform and capabilities.
@@ -68,9 +71,11 @@ example:
 }
 ```
 
-An explicit `--engine codex|claude|hybrid|native` always overrides the automatic
-policy, provided that engine is allowed by the project. `--engine auto` forces
-the project policy for a single task even if the project has a concrete default.
+An explicit `--engine codex|claude|hybrid|native|brainstorm` always overrides the automatic
+policy, provided that engine is allowed by the project. `brainstorm` is
+explicit-only: it may be allowed by a project, but it is rejected as
+`default_engine` and `balanced-v1` never selects it. `--engine auto` forces the
+project policy for a single task even if the project has a concrete default.
 
 If the preferred engine for a rule is not allowed by the project, the policy
 uses a deterministic fallback and records that fallback rule in the task.
@@ -126,6 +131,47 @@ The task builder:
 - limits task paths to the project workspace/runtime plus explicitly declared
   extra paths.
 
+## Brainstorm tasks
+
+Brainstorm v1 is an explicit-only engine. A project must include `brainstorm` in
+`allowed_engines`, and the task must request it explicitly:
+
+```bash
+python3 -m hermes_controller --runtime-root /path/to/controller \
+  task create example-api \
+  --engine brainstorm \
+  --candidates 2 \
+  --instruction-file /tmp/question.md
+```
+
+The builder forces the Brainstorm contract regardless of the project's normal
+development profile:
+
+```text
+task_type=brainstorm
+execution_profile=brainstorm
+execution_engine=brainstorm
+required_capabilities includes claude + codex
+human_gates=[]
+idempotency_policy=safe_retry
+```
+
+`--candidates` accepts 2..6 proposals per engine and defaults to 3.
+`--rubric-file` optionally supplies a validated rubric whose weights sum to
+100. The complete rubric is materialized into the task snapshot so a queued job
+does not depend on later configuration changes.
+
+Brainstorm is read-only with respect to the project checkout. Claude and Codex
+produce structured stage outputs in isolated runtime roots; Hermes performs
+anonymization, ranking, confidence calculation, checkpointing, refinement
+routing and final report generation. A final validation `PASS` yields
+`DONE / RECOMMENDED_FOR_PILOT`; `FAIL` yields `DONE / INCONCLUSIVE`.
+Neither outcome starts a pilot automatically.
+
+The distributed E2E for Brainstorm v1 passed on 2026-09-24. The implementation
+is therefore E2E-verified, but at the time of this document update it remains on
+the feature branch and is not yet permanently deployed in production.
+
 ## Inline task materialization
 
 Inline tasks do not require the Controller to write into a worker filesystem.
@@ -138,7 +184,7 @@ against its configured materialization roots, and writes:
 <runtime_directory>/<job_id>/hermes-task.md
 ```
 
-with mode `0600`. The existing Codex, Claude and Hybrid adapters then consume
+with mode `0600`. The Codex, Claude, Hybrid and Brainstorm adapters then consume
 that local snapshot exactly like a traditional `brain.task_file`.
 
 This keeps the Controller independent of worker filesystems while preserving an
@@ -155,7 +201,8 @@ For a general-purpose Linux worker, use broad maximum roots such as:
 
 These are worker-level ceilings, not per-job permissions. Every task still
 carries its narrower `allowed_paths`, which Codex and Claude enforce before
-accessing or changing files.
+accessing or changing files. Brainstorm narrows those roots again per stage and
+keeps the repository read-only.
 
 The project registry therefore does not grant arbitrary filesystem access: a
 project path must be inside both the worker maximum roots and the task's
@@ -185,7 +232,9 @@ stable result surface for Director and gateway integrations:
 submitted a modern `engine_result` envelope or the legacy `codex_result`
 envelope. The raw envelope, lease identifiers/tokens, and worker credentials
 are never included in serialized status output. `artifacts` and `hashes` are
-exposed as separate top-level fields.
+exposed as separate top-level fields. Brainstorm uses that same neutral
+contract and may attach bounded `inline_text` only to its main Markdown report;
+`bytes` and SHA-256 are calculated from the actual persisted artifact bytes.
 
 Before any attempt reaches a terminal state, these fields are `result: null`,
 `artifacts: []`, and `hashes: {}`. If a job has multiple attempts, status uses
