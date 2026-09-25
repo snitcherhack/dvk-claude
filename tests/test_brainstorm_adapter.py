@@ -18,6 +18,14 @@ from hermes_controller.brainstorm import (
     render_markdown,
 )
 from hermes_controller.brainstorm_contract import build_brainstorm_config
+from hermes_controller.brainstorm_core import (
+    EVALUATION_LISTS,
+    PROPOSAL_LISTS,
+    PROPOSAL_TEXT,
+    REFINEMENT_LISTS,
+    REFINEMENT_TEXT,
+    VALIDATION_LISTS,
+)
 
 RUBRIC = [
     {"id": "appeal", "label": "Appeal", "description": "Attractiveness.", "weight": 50},
@@ -178,15 +186,34 @@ def test_done_recommended_runs_the_ten_stage_workflow(world):
     assert result.result()["status"] == "DONE"
 
 
-def test_refinement_request_states_all_semantic_output_limits(world):
+def _assert_prompt_limits(task_md: str, texts: dict[str, int],
+                          lists: dict[str, tuple[int, int]]) -> None:
+    for field, limit in texts.items():
+        assert f"{field}: non-empty string, at most {limit} characters" in task_md
+    for field, (max_items, max_chars) in lists.items():
+        assert f"{field}: at most {max_items} items" in task_md
+        assert f"each item a non-empty string of at most {max_chars} characters" in task_md
+
+
+def test_all_stage_requests_state_semantic_output_limits(world):
     run(world)
-    task_md = (world["run"] / "stages" / "codex-refinement" / "request" / "task.md").read_text(encoding="utf-8")
-    assert "title: at most 120 characters" in task_md
-    assert "concept: at most 4000 characters" in task_md
-    assert "pilot_definition: at most 2000 characters" in task_md
-    assert "success_criterion: at most 1000 characters" in task_md
-    assert "at most 10 items each" in task_md
-    assert "at most 500 characters" in task_md
+    prompts = {
+        "proposals": (world["run"] / "stages" / "codex-proposals" / "request" / "task.md").read_text(encoding="utf-8"),
+        "evaluation": (world["run"] / "stages" / "claude-evaluation" / "request" / "task.md").read_text(encoding="utf-8"),
+        "refinement": (world["run"] / "stages" / "codex-refinement" / "request" / "task.md").read_text(encoding="utf-8"),
+        "validation": (world["run"] / "stages" / "claude-validation" / "request" / "task.md").read_text(encoding="utf-8"),
+    }
+    _assert_prompt_limits(prompts["proposals"], PROPOSAL_TEXT, PROPOSAL_LISTS)
+    _assert_prompt_limits(prompts["evaluation"], {}, EVALUATION_LISTS)
+    _assert_prompt_limits(prompts["refinement"], REFINEMENT_TEXT, REFINEMENT_LISTS)
+    _assert_prompt_limits(prompts["validation"], {}, VALIDATION_LISTS)
+
+
+def test_prompt_limits_are_generated_from_core_constants(world, monkeypatch):
+    monkeypatch.setitem(PROPOSAL_TEXT, "title", 121)
+    run(world)
+    task_md = (world["run"] / "stages" / "codex-proposals" / "request" / "task.md").read_text(encoding="utf-8")
+    assert "title: non-empty string, at most 121 characters" in task_md
 
 
 def test_done_inconclusive_when_validation_fails(world):

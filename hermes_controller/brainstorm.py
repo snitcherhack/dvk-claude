@@ -27,7 +27,13 @@ from .adapters import AdapterResult, StructuredExecutionAdapter, StructuredExecu
 from .artifacts import MAX_INLINE_TEXT_BYTES, validate_artifacts
 from .brainstorm_contract import validate_brainstorm_config
 from .brainstorm_core import (
+    EVALUATION_LISTS,
     PROPOSAL_FIELDS,
+    PROPOSAL_LISTS,
+    PROPOSAL_TEXT,
+    REFINEMENT_LISTS,
+    REFINEMENT_TEXT,
+    VALIDATION_LISTS,
     Ranking,
     anonymize,
     build_report,
@@ -713,6 +719,20 @@ class BrainstormAdapter:
                 "## Question and constraints\n\n"
                 f"{question}\n\n")
 
+    @staticmethod
+    def _semantic_limits_md(texts: dict[str, int],
+                            lists: dict[str, tuple[int, int]]) -> str:
+        lines = ["## Hard output limits", ""]
+        for field, limit in texts.items():
+            lines.append(f"- {field}: non-empty string, at most {limit} characters.")
+        for field, (max_items, max_chars) in lists.items():
+            lines.append(
+                f"- {field}: at most {max_items} items; each item a non-empty string "
+                f"of at most {max_chars} characters."
+            )
+        lines.extend(["", "These limits are mandatory.", ""])
+        return "\n".join(lines)
+
     def _proposals_md(self, run: _Run) -> str:
         count = run.config["candidate_count"]
         rubric = json.dumps(run.config["rubric"], indent=2, ensure_ascii=False)
@@ -720,32 +740,31 @@ class BrainstormAdapter:
                 + f"## Task\n\nReturn exactly {count} proposals that answer the question. Work independently; "
                 "you may read the working directory for context. Each proposal has a title, concept, hook, "
                 "audience_flow, execution_plan, dependencies, assumptions, risks and minimum_pilot.\n\n"
-                f"## Rubric used later to evaluate proposals\n\n```json\n{rubric}\n```\n")
+                + self._semantic_limits_md(PROPOSAL_TEXT, PROPOSAL_LISTS)
+                + f"\n## Rubric used later to evaluate proposals\n\n```json\n{rubric}\n```\n")
 
     def _evaluation_md(self, run: _Run) -> str:
         return (self._header("evaluation", run.question)
                 + "## Task\n\nEvaluate every candidate in input/candidates-anonymized.json against every criterion "
                 "in input/rubric.json. Give each criterion an integer score from 0 to 10 using its criterion_id, "
                 "and list strengths, weaknesses, improvements and constraint_violations. Return exactly one "
-                "evaluation per candidate_id and do not rank the candidates.\n")
+                "evaluation per candidate_id and do not rank the candidates.\n\n"
+                + self._semantic_limits_md({}, EVALUATION_LISTS))
 
     def _refinement_md(self, run: _Run) -> str:
         return (self._header("refinement", run.question)
                 + "## Task\n\nRefine the candidate in input/winner.json into a concrete pilot, taking into account "
                 "both independent critiques in input/critiques.json and the rubric in input/rubric.json. Keep the "
                 "same candidate_id; do not replace it with a different idea.\n\n"
-                "## Hard output limits\n\n"
-                "title: at most 120 characters; concept: at most 4000 characters; "
-                "pilot_definition: at most 2000 characters; success_criterion: at most 1000 characters. "
-                "decisions_adopted, discarded_elements and accepted_risks: at most 10 items each, with each item "
-                "a non-empty string of at most 500 characters. These limits are mandatory.\n")
+                + self._semantic_limits_md(REFINEMENT_TEXT, REFINEMENT_LISTS))
 
     def _validation_md(self, run: _Run) -> str:
         return (self._header("validation", run.question)
                 + "## Task\n\nValidate the refined concept in input/refined.json against the question, its "
                 "constraints and the rubric in input/rubric.json. Keep the same candidate_id, score every "
                 "criterion from 0 to 10, list material findings and return PASS or FAIL. You cannot change the "
-                "candidate.\n")
+                "candidate.\n\n"
+                + self._semantic_limits_md({}, VALIDATION_LISTS))
 
     # -- workflow -----------------------------------------------------------------------------------------------
 
