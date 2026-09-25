@@ -2,7 +2,7 @@
 
 Fecha: 2026-09-25
 
-Estado: **implementación y E2E distribuido completos; pendiente de merge y despliegue productivo permanente**.
+Estado: **Human Gates v1 fusionado, desplegado y validado en producción** (`7f9d8bc`, 2026-09-25).
 
 ## Objetivo
 
@@ -230,13 +230,49 @@ Conclusión: el lifecycle distribuido
 `WAIT_USER -> APPROVED -> QUEUED -> nuevo attempt -> DONE` y
 `WAIT_USER -> REJECTED -> CANCELLED` está verificado.
 
-## Pendiente para cerrar el rollout de Human Gates v1
+## Rollout productivo
 
-1. revisión humana de la feature tras este E2E;
-2. merge/push a `main`;
-3. despliegue permanente coordinado de Controller y worker;
-4. configurar un token de operador productivo fuera de Git;
-5. smoke post-despliegue;
-6. después, conectar Telegram/gateway al API de operador.
+Tras el E2E distribuido temporal, la feature se revisó y avanzó por fast-forward
+a `main` en `7f9d8bc1426b8fd7e6edeedf4286bd848c77e844`.
 
-La conexión con Telegram pertenece a la fase siguiente.
+Despliegue permanente:
+
+- Controller `hermes01` y worker `main-linux` ejecutan el mismo commit
+  `7f9d8bc`;
+- el Controller productivo mantiene su SQLite/runtime previo;
+- el token de operador se generó de forma aleatoria y se almacena solo en
+  `/home/snitcher/.config/dvk-hermes/controller.env` con backup privado previo;
+- systemd habilita el API mediante
+  `--operator-token-env HERMES_OPERATOR_TOKEN`; el secreto no aparece en la
+  unidad ni en Git;
+- el worker conserva su configuración productiva y sus tokens previos.
+
+### Smoke post-despliegue
+
+Job: `b1440844-8bcd-4b74-b0b1-7f17cca04595`.
+
+1. attempt 1 / run `11de44bf-3a72-40bf-b6ec-dc4d34ffd919` terminó
+   `WAIT_USER` con gate `HERMES_PHASE13_PROD_APPROVAL`;
+2. el token productivo del worker recibió HTTP **401** contra
+   `GET /v1/gates/<job>`;
+3. el token productivo de operador registró `APPROVED`, disposition
+   `QUEUED`;
+4. attempt 2 / run `8077b338-2886-4db7-a31f-decc9749f07e` recibió solo el
+   gate aprobado en `_hermes_gate_context`;
+5. el job terminó `DONE`, `gate=null`, sin modificar el repositorio.
+
+Comprobaciones adicionales:
+
+- operator token en DB: no;
+- worker token en DB: no;
+- metadatos humanos `actor/note/decided_at/source_run_id/disposition` en el
+  task persistido: no;
+- `_hermes_gate_context` en el task persistido: no;
+- `hermes-task-gates.md` contiene únicamente las instrucciones y el nombre del
+  gate aprobado, sin actor ni nota;
+- repo desechable: HEAD idéntico y working tree limpio;
+- proyecto temporal retirado del registry tras el smoke.
+
+Conclusión: Human Gates v1 queda **operativo en producción**. El siguiente
+trabajo es integrar Telegram/gateway con el API de operador; Telegram no debe
+acceder directamente a SQLite ni reutilizar tokens de worker.

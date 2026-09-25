@@ -149,7 +149,7 @@ y terminó `DONE`. Un segundo job validó `REJECTED -> CANCELLED` sin nuevo
 attempt. El token de worker no pudo usar el API de operador (`401`), y actor,
 nota y credenciales no llegaron al modelo ni al task snapshot persistido. Tras
 la prueba se restauraron los servicios productivos en `36dbc940`; Human Gates
-v1 queda E2E-verificado pero pendiente de merge y despliegue permanente.
+v1 quedó fusionado y desplegado permanentemente en `7f9d8bc`; el smoke productivo `b1440844-8bcd-4b74-b0b1-7f17cca04595` confirmó `WAIT_USER -> APPROVED -> attempt 2 -> DONE`, separación de credenciales y ausencia de metadatos humanos en el task persistido.
 
 ## Modo híbrido y papel de codex-plugin-cc
 

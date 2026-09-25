@@ -287,8 +287,16 @@ Codex job moved from `WAIT_USER` to an operator `APPROVED` decision, returned to
 `WAIT_USER` to `REJECTED` and `CANCELLED` and was never reclaimed. The worker
 token received HTTP 401 from the operator API; actor/note and internal gate
 context were absent from persisted task snapshots, and raw operator/worker
-tokens were absent from the temporary DB and journals. This feature is
-E2E-verified but is not yet permanently deployed in production.
+tokens were absent from the temporary DB and journals.
+
+Human Gates v1 was then fast-forwarded to `main` and deployed permanently at
+`7f9d8bc`. The production Controller uses an operator token stored only in its
+private environment file and enables the operator API with
+`--operator-token-env`. Post-deploy job `b1440844-8bcd-4b74-b0b1-7f17cca04595`
+completed `WAIT_USER -> APPROVED -> QUEUED -> attempt 2 -> DONE`; the worker
+token again received HTTP 401, the persisted task contained no human-decision
+metadata, the materialized gate context contained only the approved gate name,
+and the disposable repository remained unchanged.
 
 ## Optional project workspaces
 
