@@ -258,7 +258,7 @@ Usuario: aprobar / rechazar
   +---- rechazar --> Controller cancela/bloquea
 ```
 
-La resolución local de gates está implementada en Fase 13. `WAIT_USER` sigue siendo fail-closed: el Controller persiste la decisión humana y solo un `APPROVED` sobre una tarea `safe_retry` vuelve a `QUEUED`; `REJECTED` termina en `CANCELLED`. En tareas `manual_reconcile`, incluso una aprobación termina en `NEEDS_RECONCILIATION` y nunca se reejecuta automáticamente. El E2E distribuido y la conexión del API de operador con Telegram siguen pendientes.
+La resolución de gates de Fase 13 está implementada y su E2E distribuido real fue verificado el 25 de septiembre de 2026. `WAIT_USER` sigue siendo fail-closed: el Controller persiste la decisión humana y solo un `APPROVED` sobre una tarea `safe_retry` vuelve a `QUEUED`; `REJECTED` termina en `CANCELLED`. En tareas `manual_reconcile`, incluso una aprobación termina en `NEEDS_RECONCILIATION` y nunca se reejecuta automáticamente. La feature todavía no está desplegada permanentemente; la conexión del API de operador con Telegram corresponde a la fase siguiente.
 
 ## Papel de Telegram
 
@@ -330,15 +330,16 @@ El sistema ya ha demostrado:
 - resultados terminales `DONE` y `FAILED`;
 - selección automática `balanced-v1`;
 - una tarea enviada desde Telegram que recorrió la cola real hasta `main-linux`;
-- exposición normalizada de resultados para integraciones externas.
+- exposición normalizada de resultados para integraciones externas;
+- Human Gates distribuido real: job `a2240616-ea4c-40cd-a9e2-635ca30203d6` recorrió `WAIT_USER -> APPROVED -> QUEUED -> attempt 2 -> DONE`; job `433ddc2d-7985-4202-bff7-b5730c14e4b3` recorrió `WAIT_USER -> REJECTED -> CANCELLED`; el token de worker recibió `401` en el API de operador y el repo de prueba permaneció intacto.
 
 Una ejecución `FAILED` no implica un fallo de transporte. El job read-only que terminó `error_max_turns` confirmó la cadena Telegram -> Controller -> queue -> main-linux -> Hybrid -> result; el defecto estuvo en la selección/orquestación del motor.
 
 ## Próximas mejoras arquitectónicas
 
 1. Distinguir review read-only de review de alto impacto en `balanced-v1`.
-2. Completar el E2E distribuido de `WAIT_USER -> aprobación/rechazo -> resume/cancel` y desplegar el canal autenticado de operador.
-3. Conectar ese API de operador con Telegram sin exponer tokens de worker ni credenciales del Controller.
+2. Revisar, fusionar y desplegar permanentemente Human Gates v1, configurando el token de operador fuera de Git.
+3. Conectar ese API de operador ya desplegado con Telegram sin exponer tokens de worker ni credenciales del Controller.
 4. Mantener el gateway como interfaz y el Controller como autoridad de estado.
 5. Habilitar `windows-render` sólo cuando su flujo y gates estén probados.
 6. Mantener trazabilidad de engine, worker, run, evidencia y resultado en cada delegación.

@@ -281,6 +281,15 @@ HTTP operator surface uses a credential separate from worker enrollment/auth and
 is disabled when no operator token is configured. Worker tokens cannot approve
 or reject human gates.
 
+The distributed E2E passed on 2026-09-25 at feature revision `cd16ee0`. A real
+Codex job moved from `WAIT_USER` to an operator `APPROVED` decision, returned to
+`QUEUED`, created attempt 2 and finished `DONE`. A second job moved from
+`WAIT_USER` to `REJECTED` and `CANCELLED` and was never reclaimed. The worker
+token received HTTP 401 from the operator API; actor/note and internal gate
+context were absent from persisted task snapshots, and raw operator/worker
+tokens were absent from the temporary DB and journals. This feature is
+E2E-verified but is not yet permanently deployed in production.
+
 ## Optional project workspaces
 
 A project may declare named external workspaces that are not Git repositories.

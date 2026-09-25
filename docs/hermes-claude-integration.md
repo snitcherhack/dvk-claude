@@ -141,6 +141,16 @@ fronteras de materialización que los inline tasks. Si un adapter vuelve a pedir
 un gate ya aprobado, Worker y Controller fallan cerrado y normalizan el
 resultado a `BLOCKED`.
 
+El E2E distribuido real de Fase 13 se completó el 2026-09-25 con Controller
+temporal en `hermes01` y worker `main-linux-phase13`, ambos en `cd16ee0`.
+Codex produjo `WAIT_USER` sin contexto de aprobación; tras `APPROVED` por el API
+de operador, el segundo attempt recibió únicamente el nombre del gate aprobado
+y terminó `DONE`. Un segundo job validó `REJECTED -> CANCELLED` sin nuevo
+attempt. El token de worker no pudo usar el API de operador (`401`), y actor,
+nota y credenciales no llegaron al modelo ni al task snapshot persistido. Tras
+la prueba se restauraron los servicios productivos en `36dbc940`; Human Gates
+v1 queda E2E-verificado pero pendiente de merge y despliegue permanente.
+
 ## Modo híbrido y papel de codex-plugin-cc
 
 El modo `hybrid` del worker no depende del plugin para la ejecución autónoma.

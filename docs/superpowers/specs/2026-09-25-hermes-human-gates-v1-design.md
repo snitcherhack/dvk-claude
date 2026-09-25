@@ -2,7 +2,7 @@
 
 Fecha: 2026-09-25
 
-Estado: **implementación local completa; pendiente de E2E distribuido y despliegue productivo**.
+Estado: **implementación y E2E distribuido completos; pendiente de merge y despliegue productivo permanente**.
 
 ## Objetivo
 
@@ -164,16 +164,79 @@ Cubiertas:
 - worker token no puede usar API de gates;
 - API deshabilitada sin operator token.
 
-Checkpoint local: 573 tests globales antes de añadir el API de operador; la
-suite final se ejecutará antes del commit.
+Validación local final antes del E2E: **573 tests passed**, `compileall` y
+`git diff --check` correctos.
 
-## Pendiente para cerrar Fase 13
+## E2E distribuido real
 
-1. suite completa + compileall + diff-check;
-2. commit/push de la feature;
-3. aprobación humana para despliegue temporal coordinado;
-4. E2E distribuido real con un gate inocuo;
-5. rollback del despliegue temporal;
-6. documentación del resultado.
+Fecha: 2026-09-25. Revisión probada: `cd16ee07ec12d88fac145e3b42ddf078221b8623`.
+
+El despliegue fue temporal y coordinado:
+
+- Controller aislado en `hermes01`, runtime
+  `/home/snitcher/.local/state/dvk-hermes-controller-phase13`;
+- worker `main-linux-phase13`, state separado bajo
+  `/home/deiv/.local/state/dvk-hermes-worker-phase13`;
+- checkout temporal del Controller y worktree independiente del worker;
+- token de operador efímero separado del token de enrolment;
+- repositorio desechable
+  `/home/deiv/Proyectos/hermes-phase13-gate-smoke-repo`, HEAD
+  `4b4822fc26e345654348bf1b67139174d33219c2`.
+
+El endpoint Tailscale productivo se reutilizó únicamente como transporte hacia
+el Controller temporal: los servicios productivos se detuvieron durante el
+corte, pero sus runtimes, bases de datos y checkouts no se modificaron.
+
+### Camino APPROVED
+
+Job: `a2240616-ea4c-40cd-a9e2-635ca30203d6`.
+
+1. attempt 1 / run `c47ed073-3868-409e-9944-d0c462f7c9b4` terminó
+   `WAIT_USER` con gate `HERMES_PHASE13_E2E_APPROVAL`;
+2. el token de worker recibió **HTTP 401** al consultar el API de operador;
+3. el token efímero de operador consultó el gate y registró `APPROVED`;
+4. la decisión produjo `QUEUED` y un nuevo attempt;
+5. attempt 2 / run `a1fbc380-218b-4ac2-b051-d456712a676a` recibió
+   `_hermes_gate_context={"approved_gates":["HERMES_PHASE13_E2E_APPROVAL"]}`;
+6. `hermes-task-gates.md` contenía el gate aprobado, pero no actor ni nota;
+7. Codex devolvió `DONE`, `gate=null`, sin modificar el repositorio.
+
+Estado final: `DONE`, dos runs: `WAIT_USER`, `DONE`.
+
+### Camino REJECTED
+
+Job: `433ddc2d-7985-4202-bff7-b5730c14e4b3`.
+
+1. attempt 1 / run `6462376c-697c-4234-a16a-e7465cf83ff8` terminó
+   `WAIT_USER` con el mismo gate;
+2. el operador registró `REJECTED`;
+3. el job pasó a `CANCELLED`;
+4. tras varios ciclos de polling permaneció con **un único run** y nunca fue
+   reclamado de nuevo.
+
+### Seguridad e integridad
+
+- token de operador en DB: **no**;
+- token raw del worker en DB: **no**;
+- ambos tokens en journals temporales: **no**;
+- `actor`, `note` y `_hermes_gate_context` en task snapshots persistidos:
+  **no**;
+- actor/nota permanecen exclusivamente en `gate_decisions`;
+- repo desechable: HEAD idéntico y working tree limpio antes y después;
+- producción se restauró en `36dbc940467f5544945c0d27314e03e2572d546f`,
+  Controller y worker activos, heartbeat fresco y cero jobs productivos activos.
+
+Conclusión: el lifecycle distribuido
+`WAIT_USER -> APPROVED -> QUEUED -> nuevo attempt -> DONE` y
+`WAIT_USER -> REJECTED -> CANCELLED` está verificado.
+
+## Pendiente para cerrar el rollout de Human Gates v1
+
+1. revisión humana de la feature tras este E2E;
+2. merge/push a `main`;
+3. despliegue permanente coordinado de Controller y worker;
+4. configurar un token de operador productivo fuera de Git;
+5. smoke post-despliegue;
+6. después, conectar Telegram/gateway al API de operador.
 
 La conexión con Telegram pertenece a la fase siguiente.
