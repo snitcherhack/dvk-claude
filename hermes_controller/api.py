@@ -20,10 +20,14 @@ REQUEST_SOCKET_TIMEOUT_S = 10
 class ControllerHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], controller: Controller, enrollment_tokens: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, address: tuple[str, int], controller: Controller,
+        enrollment_tokens: dict[str, str] | None = None, operator_token: str | None = None,
+    ) -> None:
         self.controller = controller
-        # Bootstrap credentials remain in process environment/configuration only.
+        # Bootstrap/operator credentials remain in process environment/configuration only.
         self.enrollment_tokens = enrollment_tokens or {}
+        self.operator_token = operator_token
         self.request_lock = threading.RLock()
         super().__init__(address, ControllerRequestHandler)
 
@@ -62,6 +66,10 @@ class ControllerRequestHandler(BaseHTTPRequestHandler):
     def _worker_auth(self, worker_id: str) -> bool:
         return self.server.controller.authenticate_worker(worker_id, self._token())
 
+    def _operator_auth(self) -> bool:
+        expected = self.server.operator_token
+        return bool(expected and hmac.compare_digest(expected, self._token()))
+
     def _reply(self, status: int, payload: Any) -> None:
         data = json.dumps(payload, sort_keys=True).encode("utf-8")
         self.send_response(status)
@@ -78,6 +86,18 @@ class ControllerRequestHandler(BaseHTTPRequestHandler):
         try:
             if self.path == "/health":
                 self._reply(200, {"status": "ok"})
+                return
+            prefix = "/v1/gates/"
+            if self.path.startswith(prefix):
+                if not self._operator_auth(): self._reply(401, {"error": "unauthorized"}); return
+                job_id = self.path[len(prefix):]
+                status = self.server.controller.status(job_id)
+                self._reply(200, {
+                    "job_id": job_id,
+                    "state": status["state"],
+                    "gate": status["gate"],
+                    "decisions": self.server.controller.gate_history(job_id),
+                })
                 return
             prefix = "/v1/jobs/"
             if self.path.startswith(prefix):
@@ -117,6 +137,18 @@ class ControllerRequestHandler(BaseHTTPRequestHandler):
                     self.server.controller.provision_worker_token(worker_id, self._token())
                 self._reply(200, {"worker_id": self.server.controller.register_worker(body), "enrolled": True})
                 return
+            if self.path in {"/v1/gates/approve", "/v1/gates/reject"}:
+                if not self._operator_auth(): self._reply(401, {"error": "unauthorized"}); return
+                resolver = (
+                    self.server.controller.approve_gate
+                    if self.path.endswith("/approve")
+                    else self.server.controller.reject_gate
+                )
+                result = resolver(
+                    body["job_id"], body["gate"], actor=body["actor"], note=body.get("note"),
+                )
+                self._reply(200, result)
+                return
             worker_id = body.get("worker_id", "")
             if not self._worker_auth(worker_id): self._reply(401, {"error": "unauthorized"}); return
             if self.path == "/v1/workers/heartbeat":
@@ -134,5 +166,8 @@ class ControllerRequestHandler(BaseHTTPRequestHandler):
             self._reply(400, {"error": str(exc)})
 
 
-def serve(controller: Controller, host: str = "127.0.0.1", port: int = 8787, enrollment_tokens: dict[str, str] | None = None) -> ControllerHTTPServer:
-    return ControllerHTTPServer((host, port), controller, enrollment_tokens)
+def serve(
+    controller: Controller, host: str = "127.0.0.1", port: int = 8787,
+    enrollment_tokens: dict[str, str] | None = None, operator_token: str | None = None,
+) -> ControllerHTTPServer:
+    return ControllerHTTPServer((host, port), controller, enrollment_tokens, operator_token)

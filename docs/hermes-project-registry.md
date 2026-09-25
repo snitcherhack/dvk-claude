@@ -262,6 +262,25 @@ For `DONE`, `BLOCKED` and `FAILED`, the result gate must be null. The worker
 clears accidental model-generated gates from non-WAIT_USER results before
 ingestion; the Controller independently enforces the same invariant.
 
+Gate decisions are Controller-owned state, stored separately from the immutable
+task snapshot. An approval or rejection records the gate name, decision, actor,
+optional note, timestamp, source run and resulting disposition. The public task
+never stores actor/note metadata and keys prefixed with `_hermes_` are reserved
+for Controller/worker runtime context.
+
+For `safe_retry` jobs, approving the current gate atomically records
+`APPROVED` and returns the job to `QUEUED`; the next claim receives only the
+approved gate names through the internal `_hermes_gate_context`. The worker
+materializes a gate-aware task file outside the repository so engines can
+continue without inferring approval for any other action. Rejecting records
+`REJECTED` and sets the job to `CANCELLED`. For `manual_reconcile` jobs,
+approval yields `NEEDS_RECONCILIATION` rather than automatic redistribution.
+
+The Controller exposes local CLI commands `gate status|approve|reject`. The
+HTTP operator surface uses a credential separate from worker enrollment/auth and
+is disabled when no operator token is configured. Worker tokens cannot approve
+or reject human gates.
+
 ## Optional project workspaces
 
 A project may declare named external workspaces that are not Git repositories.

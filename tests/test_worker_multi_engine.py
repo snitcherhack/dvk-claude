@@ -20,7 +20,7 @@ from hermes_controller.api import serve
 from hermes_controller.brainstorm import BrainstormAdapter
 from hermes_controller.brainstorm_contract import build_brainstorm_config
 from hermes_controller.clock import FakeClock
-from hermes_controller.controller import Controller
+from hermes_controller.controller import Controller, ControllerError
 from hermes_controller.worker import WorkerDaemon
 
 REPO = Path(__file__).parents[1]
@@ -109,17 +109,12 @@ def test_worker_injects_only_job_run_and_attempt(api):
     assert "lease" not in serialized.lower()
 
 
-def test_forged_runtime_in_task_snapshot_is_overwritten(api):
-    controller, url, root = api
-    brainstorm = Recorder()
-    worker = daemon(url, root, EngineRoutingAdapter({"codex": Recorder(), "brainstorm": brainstorm}))
-    worker.register()
-    job_id = controller.enqueue(brainstorm_task(_hermes_runtime={"job_id": "evil", "run_id": "evil", "attempt": 99,
-                                                                "lease_token": "x"}))
-    assert worker.once()
-    runtime = brainstorm.tasks[0]["_hermes_runtime"]
-    assert set(runtime) == {"job_id", "run_id", "attempt"}
-    assert runtime["job_id"] == job_id and runtime["attempt"] == 1 and runtime["run_id"] != "evil"
+def test_controller_rejects_forged_runtime_in_task_snapshot(api):
+    controller, _url, _root = api
+    with pytest.raises(ControllerError, match="reserved"):
+        controller.enqueue(brainstorm_task(_hermes_runtime={
+            "job_id": "evil", "run_id": "evil", "attempt": 99, "lease_token": "x",
+        }))
 
 
 def test_claim_task_is_not_mutated(api):

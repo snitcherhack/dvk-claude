@@ -258,7 +258,7 @@ Usuario: aprobar / rechazar
   +---- rechazar --> Controller cancela/bloquea
 ```
 
-La resolución y reanudación de gates es una pieza pendiente. Hasta implementarla, `WAIT_USER` es un límite de seguridad, no una aprobación implícita.
+La resolución local de gates está implementada en Fase 13. `WAIT_USER` sigue siendo fail-closed: el Controller persiste la decisión humana y solo un `APPROVED` sobre una tarea `safe_retry` vuelve a `QUEUED`; `REJECTED` termina en `CANCELLED`. En tareas `manual_reconcile`, incluso una aprobación termina en `NEEDS_RECONCILIATION` y nunca se reejecuta automáticamente. El E2E distribuido y la conexión del API de operador con Telegram siguen pendientes.
 
 ## Papel de Telegram
 
@@ -337,8 +337,8 @@ Una ejecución `FAILED` no implica un fallo de transporte. El job read-only que 
 ## Próximas mejoras arquitectónicas
 
 1. Distinguir review read-only de review de alto impacto en `balanced-v1`.
-2. Implementar `WAIT_USER -> aprobación/rechazo -> resume/cancel`.
-3. Conectar la resolución de gates con Telegram.
+2. Completar el E2E distribuido de `WAIT_USER -> aprobación/rechazo -> resume/cancel` y desplegar el canal autenticado de operador.
+3. Conectar ese API de operador con Telegram sin exponer tokens de worker ni credenciales del Controller.
 4. Mantener el gateway como interfaz y el Controller como autoridad de estado.
 5. Habilitar `windows-render` sólo cuando su flujo y gates estén probados.
 6. Mantener trazabilidad de engine, worker, run, evidencia y resultado en cada delegación.

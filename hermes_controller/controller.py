@@ -91,6 +91,14 @@ class Controller:
               project_id TEXT PRIMARY KEY, manifest_json TEXT NOT NULL,
               registered_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS gate_decisions (
+              job_id TEXT NOT NULL, gate TEXT NOT NULL, decision TEXT NOT NULL,
+              actor TEXT NOT NULL, note TEXT, decided_at INTEGER NOT NULL,
+              source_run_id TEXT NOT NULL, disposition TEXT NOT NULL,
+              PRIMARY KEY(job_id, gate),
+              FOREIGN KEY(job_id) REFERENCES jobs(job_id),
+              FOREIGN KEY(source_run_id) REFERENCES runs(run_id)
+            );
             """
         )
 
@@ -351,6 +359,9 @@ class Controller:
                 task = json.loads(job["task_json"])
                 if not self._worker_matches(descriptor, task):
                     continue
+                approved_gates = self._approved_gates(job["job_id"])
+                if approved_gates:
+                    task["_hermes_gate_context"] = {"approved_gates": approved_gates}
                 attempt = job["attempt"] + 1
                 run_id, lease_id = str(uuid.uuid4()), str(uuid.uuid4())
                 token = secrets.token_urlsafe(32)
@@ -393,8 +404,8 @@ class Controller:
     def ingest_result(self, envelope: dict[str, Any]) -> None:
         self._validate_envelope(envelope)
         run = self.db.execute("SELECT * FROM runs WHERE run_id=?", (envelope["run_id"],)).fetchone()
-        serialized = json.dumps(envelope, sort_keys=True)
-        if run is not None and run["state"] in RESULT_STATUSES and run["result_json"] == serialized:
+        incoming_serialized = json.dumps(envelope, sort_keys=True)
+        if run is not None and run["state"] in RESULT_STATUSES and run["result_json"] == incoming_serialized:
             return
         if run is None or run["state"] != "RUNNING":
             raise StaleResultError("run is stale or unknown")
@@ -417,11 +428,32 @@ class Controller:
         if outcome == "WAIT_USER":
             if not isinstance(gate, str) or gate not in declared_gates:
                 raise ControllerError("WAIT_USER result requires a declared human gate")
+            if self._gate_is_approved(run["job_id"], gate):
+                approved_gate = gate
+                normalized = json.loads(incoming_serialized)
+                result = self._result_payload(normalized)
+                evidence = list(result.get("evidence", []))
+                evidence.append(f"gate-policy: blocked re-request of already-approved gate {approved_gate}")
+                result.update({
+                    "status": "BLOCKED",
+                    "summary": f"adapter re-requested already-approved human gate: {approved_gate}",
+                    "gate": None,
+                    "evidence": evidence,
+                })
+                envelope = normalized
+                outcome, gate = "BLOCKED", None
+                self._event(
+                    "job", run["job_id"], "GATE_REREQUEST_BLOCKED",
+                    gate=approved_gate, run_id=run["run_id"],
+                )
         elif gate is not None:
             raise ControllerError("non-WAIT_USER result cannot carry a human gate")
+        serialized = json.dumps(envelope, sort_keys=True)
         self.db.execute("UPDATE runs SET state=?, result_json=? WHERE run_id=?", (outcome, serialized, run["run_id"]))
         self.db.execute("UPDATE jobs SET state=?, active_run_id=NULL WHERE job_id=?", (outcome, run["job_id"]))
-        self._event("run", run["run_id"], "RESULT_INGESTED", outcome=outcome, gate=result["gate"], engine=actual_engine)
+        self._event("run", run["run_id"], "RESULT_INGESTED", outcome=outcome, gate=gate, engine=actual_engine)
+        if outcome == "WAIT_USER":
+            self._event("job", run["job_id"], "GATE_WAITING", gate=gate, run_id=run["run_id"])
 
     def status(self, job_id: str) -> dict[str, Any]:
         job = self.db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -442,6 +474,7 @@ class Controller:
             "result": result,
             "artifacts": artifacts,
             "hashes": hashes,
+            "gate": self._gate_summary(job_id, job["state"]),
         }
 
     def _latest_terminal_result(self, job_id: str) -> tuple[dict[str, Any] | None, list[Any], dict[str, Any]]:
@@ -476,6 +509,147 @@ class Controller:
 
     def events(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.db.execute("SELECT * FROM events ORDER BY event_id")]
+
+    def gate_history(self, job_id: str) -> list[dict[str, Any]]:
+        if self.db.execute("SELECT 1 FROM jobs WHERE job_id=?", (job_id,)).fetchone() is None:
+            raise ControllerError(f"unknown job: {job_id}")
+        rows = self.db.execute(
+            """SELECT job_id, gate, decision, actor, note, decided_at, source_run_id, disposition
+               FROM gate_decisions WHERE job_id=? ORDER BY decided_at, gate""",
+            (job_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def approve_gate(self, job_id: str, gate: str, *, actor: str, note: str | None = None) -> dict[str, Any]:
+        return self._resolve_gate(job_id, gate, "APPROVED", actor=actor, note=note)
+
+    def reject_gate(self, job_id: str, gate: str, *, actor: str, note: str | None = None) -> dict[str, Any]:
+        return self._resolve_gate(job_id, gate, "REJECTED", actor=actor, note=note)
+
+    def _resolve_gate(
+        self, job_id: str, gate: str, decision: str, *, actor: str, note: str | None,
+    ) -> dict[str, Any]:
+        if not isinstance(job_id, str) or not job_id or not isinstance(gate, str) or not gate:
+            raise ControllerError("job_id and gate are required")
+        if decision not in {"APPROVED", "REJECTED"}:
+            raise ControllerError("invalid gate decision")
+        if not isinstance(actor, str) or not actor.strip() or len(actor.strip()) > 128 or any(ord(ch) < 32 for ch in actor.strip()):
+            raise ControllerError("invalid gate actor")
+        actor = actor.strip()
+        if note is not None and (not isinstance(note, str) or len(note) > 2_000 or "\x00" in note):
+            raise ControllerError("invalid gate note")
+
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            job = self.db.execute(
+                "SELECT state, idempotent, task_json FROM jobs WHERE job_id=?",
+                (job_id,),
+            ).fetchone()
+            if job is None:
+                raise ControllerError(f"unknown job: {job_id}")
+
+            existing = self.db.execute(
+                """SELECT job_id, gate, decision, actor, note, decided_at, source_run_id, disposition
+                   FROM gate_decisions WHERE job_id=? AND gate=?""",
+                (job_id, gate),
+            ).fetchone()
+            if existing is not None:
+                if existing["decision"] != decision:
+                    raise ControllerError(f"gate already resolved as {existing['decision']}")
+                self.db.execute("COMMIT")
+                return dict(existing)
+
+            if job["state"] != "WAIT_USER":
+                raise ControllerError("job is not waiting for a human gate")
+            task = json.loads(job["task_json"])
+            if gate not in task.get("human_gates", []):
+                raise ControllerError("gate is not declared by the task")
+            current_gate, source_run_id = self._current_waiting_gate(job_id)
+            if current_gate != gate or source_run_id is None:
+                raise ControllerError(f"gate is not the current waiting gate: {current_gate}")
+
+            if decision == "APPROVED":
+                disposition = "QUEUED" if bool(job["idempotent"]) else "NEEDS_RECONCILIATION"
+            else:
+                disposition = "CANCELLED"
+            now = self.clock.now()
+            self.db.execute(
+                "INSERT INTO gate_decisions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (job_id, gate, decision, actor, note, now, source_run_id, disposition),
+            )
+            self.db.execute(
+                "UPDATE jobs SET state=?, active_run_id=NULL WHERE job_id=? AND state='WAIT_USER'",
+                (disposition, job_id),
+            )
+            self._event(
+                "job", job_id, f"GATE_{decision}", gate=gate, actor=actor,
+                source_run_id=source_run_id, disposition=disposition,
+            )
+            if disposition == "QUEUED":
+                self._event("job", job_id, "JOB_RESUMED", gate=gate)
+            elif disposition == "CANCELLED":
+                self._event("job", job_id, "JOB_CANCELLED", gate=gate)
+            else:
+                self._event("job", job_id, "JOB_NEEDS_RECONCILIATION", gate=gate)
+            self.db.execute("COMMIT")
+            return {
+                "job_id": job_id,
+                "gate": gate,
+                "decision": decision,
+                "actor": actor,
+                "note": note,
+                "decided_at": now,
+                "source_run_id": source_run_id,
+                "disposition": disposition,
+            }
+        except Exception:
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
+            raise
+
+    def _current_waiting_gate(self, job_id: str) -> tuple[str | None, str | None]:
+        row = self.db.execute(
+            """SELECT run_id, result_json FROM runs
+               WHERE job_id=? AND state='WAIT_USER' AND result_json IS NOT NULL
+               ORDER BY attempt DESC LIMIT 1""",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None, None
+        try:
+            envelope = json.loads(row["result_json"])
+            payload = self._result_payload(envelope)
+            gate = payload.get("gate")
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ControllerError("stored WAIT_USER result is invalid") from exc
+        return (gate if isinstance(gate, str) else None), row["run_id"]
+
+    def _approved_gates(self, job_id: str) -> list[str]:
+        return [
+            row["gate"]
+            for row in self.db.execute(
+                "SELECT gate FROM gate_decisions WHERE job_id=? AND decision='APPROVED' ORDER BY decided_at, gate",
+                (job_id,),
+            ).fetchall()
+        ]
+
+    def _gate_is_approved(self, job_id: str, gate: str) -> bool:
+        return self.db.execute(
+            "SELECT 1 FROM gate_decisions WHERE job_id=? AND gate=? AND decision='APPROVED'",
+            (job_id, gate),
+        ).fetchone() is not None
+
+    def _gate_summary(self, job_id: str, job_state: str) -> dict[str, Any]:
+        rows = self.db.execute(
+            "SELECT gate, decision FROM gate_decisions WHERE job_id=? ORDER BY decided_at, gate",
+            (job_id,),
+        ).fetchall()
+        waiting_for = self._current_waiting_gate(job_id)[0] if job_state == "WAIT_USER" else None
+        return {
+            "waiting_for": waiting_for,
+            "approved": [row["gate"] for row in rows if row["decision"] == "APPROVED"],
+            "rejected": [row["gate"] for row in rows if row["decision"] == "REJECTED"],
+        }
 
     def _job_is_idempotent(self, job_id: str) -> bool:
         return bool(self.db.execute("SELECT idempotent FROM jobs WHERE job_id=?", (job_id,)).fetchone()["idempotent"])
@@ -598,6 +772,8 @@ class Controller:
     @staticmethod
     def _validate_task(task: dict[str, Any]) -> None:
         required = {"brain", "project", "repository", "ref", "task_type", "platform", "required_capabilities", "execution_profile", "human_gates", "idempotency_policy"}
+        if any(isinstance(key, str) and key.startswith("_hermes_") for key in task):
+            raise ControllerError("task keys with _hermes_ prefix are reserved")
         if not required.issubset(task) or task["idempotency_policy"] not in {"safe_retry", "manual_reconcile"}:
             raise ControllerError("invalid task snapshot")
         brain = task["brain"]

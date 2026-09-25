@@ -52,6 +52,16 @@ def main() -> None:
     commands.add_parser("reconcile-leases")
     commands.add_parser("status").add_argument("job_id")
 
+    gate = commands.add_parser("gate")
+    gate_sub = gate.add_subparsers(dest="gate_command", required=True)
+    gate_sub.add_parser("status").add_argument("job_id")
+    for action in ("approve", "reject"):
+        gate_action = gate_sub.add_parser(action)
+        gate_action.add_argument("job_id")
+        gate_action.add_argument("gate_name")
+        gate_action.add_argument("--actor", required=True)
+        gate_action.add_argument("--note")
+
     project = commands.add_parser("project")
     project_sub = project.add_subparsers(dest="project_command", required=True)
     project_sub.add_parser("register").add_argument("json_file")
@@ -79,6 +89,10 @@ def main() -> None:
         default=[],
         metavar="WORKER_ID=ENV_VAR",
     )
+    serve_parser.add_argument(
+        "--operator-token-env",
+        help="environment variable containing the operator token for human-gate API calls",
+    )
 
     worker = commands.add_parser("worker")
     worker_sub = worker.add_subparsers(dest="worker_command", required=True)
@@ -103,11 +117,32 @@ def main() -> None:
             for item in args.enrollment_token_env:
                 worker_id, env_name = item.split("=", 1)
                 tokens[worker_id] = os.environ[env_name]
-            server = serve(controller, args.host, args.port, tokens)
+            operator_token = os.environ[args.operator_token_env] if args.operator_token_env else None
+            server = serve(controller, args.host, args.port, tokens, operator_token)
             try:
                 server.serve_forever()
             finally:
                 server.server_close()
+            return
+
+        if args.command == "gate":
+            if args.gate_command == "status":
+                job_status = controller.status(args.job_id)
+                out = {
+                    "job_id": args.job_id,
+                    "state": job_status["state"],
+                    "gate": job_status["gate"],
+                    "decisions": controller.gate_history(args.job_id),
+                }
+            elif args.gate_command == "approve":
+                out = controller.approve_gate(
+                    args.job_id, args.gate_name, actor=args.actor, note=args.note,
+                )
+            else:
+                out = controller.reject_gate(
+                    args.job_id, args.gate_name, actor=args.actor, note=args.note,
+                )
+            print(json.dumps(out, sort_keys=True))
             return
 
         if args.command == "project":

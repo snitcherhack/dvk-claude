@@ -474,13 +474,9 @@ def test_controller_rejects_a_brainstorm_result_with_the_wrong_engine(env):
     assert env.controller.status(job_id)["state"] == "DONE"
 
 
-def test_forged_runtime_in_the_snapshot_is_replaced_by_the_claim(env):
+def test_controller_rejects_forged_runtime_in_the_snapshot(env):
     env.controller.register_project(env.manifest())
     task = env.controller.build_project_task("onboarding-docs", QUESTION, engine="brainstorm")
     task["_hermes_runtime"] = {"job_id": "fake", "run_id": "fake", "attempt": 999}
-    job_id = env.controller.enqueue(task)
-    assert env.task_json(job_id)["_hermes_runtime"]["job_id"] == "fake"   # Controller does not reserve the key yet
-    env.worker().once()
-    run = env.controller.status(job_id)["runs"][0]
-    assert env.fleet.brainstorm_tasks[0]["_hermes_runtime"] == {"job_id": job_id, "run_id": run["run_id"], "attempt": 1}
-    assert env.controller.status(job_id)["state"] == "DONE"
+    with pytest.raises(ControllerError, match="reserved"):
+        env.controller.enqueue(task)

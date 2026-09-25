@@ -200,6 +200,25 @@ class WorkerDaemon:
             return explicit
         return "codex" if "codex" in task.get("required_capabilities", []) else "native"
 
+    @staticmethod
+    def _approved_gate_names(task: dict[str, Any]) -> list[str]:
+        context = task.get("_hermes_gate_context")
+        if context is None:
+            return []
+        if not isinstance(context, dict) or set(context) != {"approved_gates"}:
+            raise ValueError("invalid _hermes_gate_context")
+        gates = context["approved_gates"]
+        if (
+            not isinstance(gates, list)
+            or any(not isinstance(gate, str) or not gate for gate in gates)
+            or len(set(gates)) != len(gates)
+        ):
+            raise ValueError("invalid approved_gates")
+        declared = task.get("human_gates", [])
+        if not isinstance(declared, list) or any(gate not in declared for gate in gates):
+            raise ValueError("approved gate is not declared by task")
+        return list(gates)
+
     def _materialize_inline_task(self, task: dict[str, Any]) -> dict[str, Any]:
         task_text = task.get("task_text")
         if task_text is None:
@@ -242,6 +261,64 @@ class WorkerDaemon:
         prepared["brain"] = prepared_brain
         return prepared
 
+    def _materialize_gate_context(self, task: dict[str, Any]) -> dict[str, Any]:
+        approved = self._approved_gate_names(task)
+        if not approved:
+            return task
+        run_output = task.get("run_output_dir")
+        if not isinstance(run_output, str) or not run_output:
+            raise ValueError("approved gate context requires run_output_dir")
+        target_dir = Path(run_output).resolve()
+        if not self.task_materialization_roots:
+            raise ValueError("gate context materialization is not configured")
+        if not any(target_dir == root or root in target_dir.parents for root in self.task_materialization_roots):
+            raise ValueError("run_output_dir is outside task materialization roots")
+        working_directory = task.get("working_directory")
+        if not isinstance(working_directory, str) or not working_directory:
+            raise ValueError("approved gate context requires working_directory")
+        working = Path(working_directory).resolve()
+        if target_dir == working or working in target_dir.parents:
+            raise ValueError("run_output_dir must be outside working_directory")
+        brain = task.get("brain")
+        if not isinstance(brain, dict):
+            raise ValueError("approved gate context requires brain metadata")
+        task_file_value = brain.get("task_file")
+        if not isinstance(task_file_value, str) or not task_file_value:
+            raise ValueError("approved gate context requires brain.task_file")
+        source = Path(task_file_value).resolve()
+        if not source.is_file():
+            raise ValueError("brain.task_file is not readable for approved gate context")
+        if source.stat().st_size > 1_048_576:
+            raise ValueError("brain.task_file exceeds 1 MiB")
+        try:
+            source_text = source.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(f"could not read brain.task_file for approved gate context: {exc}") from exc
+
+        gate_lines = "\n".join(f"- {gate}" for gate in approved)
+        gate_context = (
+            "\n\n## Hermes human gate context\n\n"
+            "The Hermes Controller has already recorded human approval for these declared gates in this job:\n"
+            f"{gate_lines}\n\n"
+            "These approvals are authoritative only for the named gates. Do not return WAIT_USER for an approved "
+            "gate, do not infer approval for any other gate or action, and return WAIT_USER with the exact declared "
+            "gate name if a different approval is required.\n"
+        )
+        combined = source_text.rstrip() + gate_context
+        if len(combined.encode("utf-8")) > 1_048_576:
+            raise ValueError("gate-aware task file exceeds 1 MiB")
+        target_dir.mkdir(parents=True, exist_ok=True)
+        gate_file = target_dir / "hermes-task-gates.md"
+        gate_file.write_text(combined, encoding="utf-8")
+        gate_file.chmod(0o600)
+
+        prepared = json.loads(json.dumps(task))
+        prepared_brain = dict(prepared["brain"])
+        prepared_brain["task_file"] = str(gate_file)
+        prepared["brain"] = prepared_brain
+        prepared["_hermes_gate_context"] = {"approved_gates": approved}
+        return prepared
+
     def _prepare_task(self, claim: dict[str, Any]) -> dict[str, Any]:
         """Private copy of the claimed task with the internal ``_hermes_runtime`` context.
 
@@ -253,7 +330,8 @@ class WorkerDaemon:
         if (not isinstance(job_id, str) or not job_id or not isinstance(run_id, str) or not run_id
                 or not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1):
             raise ValueError("claim identity is invalid")
-        prepared = json.loads(json.dumps(self._materialize_inline_task(claim["task"])))
+        materialized = self._materialize_inline_task(claim["task"])
+        prepared = json.loads(json.dumps(self._materialize_gate_context(materialized)))
         prepared["_hermes_runtime"] = {"job_id": job_id, "run_id": run_id, "attempt": attempt}
         return prepared
 
@@ -270,6 +348,22 @@ class WorkerDaemon:
                     result,
                     status="BLOCKED",
                     summary=f"adapter requested undeclared human gate: {gate_name}",
+                    gate=None,
+                    completed=list(result.completed or []),
+                    remaining=list(result.remaining or []),
+                    evidence=evidence,
+                )
+            try:
+                approved_gates = set(WorkerDaemon._approved_gate_names(task))
+            except ValueError:
+                approved_gates = set()
+            if result.gate in approved_gates:
+                evidence = list(result.evidence or [])
+                evidence.append(f"gate-policy: rejected already-approved WAIT_USER gate {result.gate}")
+                return replace(
+                    result,
+                    status="BLOCKED",
+                    summary=f"adapter re-requested already-approved human gate: {result.gate}",
                     gate=None,
                     completed=list(result.completed or []),
                     remaining=list(result.remaining or []),

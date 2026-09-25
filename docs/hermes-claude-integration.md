@@ -125,6 +125,22 @@ El Controller sigue aceptando temporalmente el campo histórico `codex_result`
 para no romper workers antiguos. Un sobre no puede contener ambos formatos a
 la vez.
 
+## Contexto de human gates
+
+Los adapters no reciben identidad del aprobador, notas ni credenciales. Cuando
+el Controller reanuda un job `safe_retry` tras una aprobación, el claim lleva
+solo los nombres de gates ya aprobados en el contexto interno
+`_hermes_gate_context`. El worker valida ese contexto contra
+`task.human_gates`, crea `hermes-task-gates.md` bajo `run_output_dir` y
+añade instrucciones explícitas: no volver a pedir un gate ya aprobado, no
+inferir aprobación de otros gates y devolver `WAIT_USER` para cualquier nueva
+decisión humana necesaria.
+
+Ese fichero permanece fuera del checkout del proyecto y reutiliza las mismas
+fronteras de materialización que los inline tasks. Si un adapter vuelve a pedir
+un gate ya aprobado, Worker y Controller fallan cerrado y normalizan el
+resultado a `BLOCKED`.
+
 ## Modo híbrido y papel de codex-plugin-cc
 
 El modo `hybrid` del worker no depende del plugin para la ejecución autónoma.
