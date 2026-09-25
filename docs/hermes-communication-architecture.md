@@ -326,7 +326,7 @@ El sistema ya ha demostrado:
 - jobs creados y persistidos por el Controller;
 - `main-linux` ONLINE y reclamando jobs;
 - ejecuciones reales Codex, Claude, Hybrid y Brainstorm;
-- Brainstorm distribuido real con Controller en `hermes01` y worker en `main-linux`; tras el despliegue permanente, el smoke productivo `0fec7b57-bbf5-442d-9069-2793e8970332` terminó `DONE / RECOMMENDED_FOR_PILOT` con seis llamadas, cero reintentos, once artefactos verificados, tres sondas Codex `PASS` y repo sin cambios;
+- Brainstorm distribuido real con Controller en `hermes01` y worker en `main-linux`; tras el hardening `52832ab`, el smoke productivo `20fee417-1944-487f-abac-17580656018d` terminó `DONE / RECOMMENDED_FOR_PILOT` con seis llamadas, cero reintentos, límites de las cuatro etapas generados desde `brainstorm_core`, tres sondas Codex `PASS`, artefactos verificados y repo sin cambios;
 - resultados terminales `DONE` y `FAILED`;
 - selección automática `balanced-v1`;
 - una tarea enviada desde Telegram que recorrió la cola real hasta `main-linux`;

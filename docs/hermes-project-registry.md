@@ -168,12 +168,15 @@ routing and final report generation. A final validation `PASS` yields
 `DONE / RECOMMENDED_FOR_PILOT`; `FAIL` yields `DONE / INCONCLUSIVE`.
 Neither outcome starts a pilot automatically.
 
-Brainstorm v1 passed its distributed E2E on 2026-09-24 and is now permanently
-deployed on the production Controller and `main-linux` worker. The production
-post-deploy smoke `0fec7b57-bbf5-442d-9069-2793e8970332` completed `DONE /
-RECOMMENDED_FOR_PILOT` with six model calls, zero retries, eleven verified
-artifacts and an unchanged repository fingerprint. `brainstorm` remains
-explicit-only and is still forbidden as a project default.
+Brainstorm v1 passed its distributed E2E on 2026-09-24 and is permanently
+deployed on the production Controller and `main-linux` worker. Post-rollout
+hardening `52832ab` makes every stage prompt derive its semantic field/list
+limits directly from the constants used by `brainstorm_core` validators, so
+prompt and validator limits cannot drift independently. The production smoke
+`20fee417-1944-487f-abac-17580656018d` completed `DONE /
+RECOMMENDED_FOR_PILOT` with six model calls, zero retries, verified artifacts
+and an unchanged repository fingerprint. `brainstorm` remains explicit-only
+and is still forbidden as a project default.
 
 ## Inline task materialization
 

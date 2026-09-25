@@ -2,7 +2,7 @@
 
 Fecha: 2026-09-23
 
-Estado: **Fases 0-12 completadas; Brainstorm v1 operativo en producción**. El E2E real `hermes01 -> main-linux -> Claude/Codex -> hermes01`, el despliegue permanente y el smoke productivo superaron los criterios de aceptación el 2026-09-24. La revisión productiva final es `569eb8c`, incluido el hotfix de límites semánticos de refinement.
+Estado: **Fases 0-12 completadas; Brainstorm v1 operativo en producción**. El E2E real `hermes01 -> main-linux -> Claude/Codex -> hermes01`, el despliegue permanente y los smokes productivos superaron los criterios de aceptación. La revisión productiva actual es `52832ab`: los límites semánticos de las cuatro etapas se generan desde las constantes de `brainstorm_core`, evitando divergencia entre prompts y validators.
 
 Ámbito: `dvk-claude`
 
@@ -1326,8 +1326,49 @@ prompt corregido. Usó el CLI productivo, `max_turns=12`, devolvió un título d
 El proyecto temporal del smoke se retiró del registry al terminar. Los jobs y
 runtimes de evidencia se conservan para trazabilidad.
 
-Conclusión de Fase 12: Brainstorm v1 queda **operativo en producción** en
-`569eb8c`, manteniendo `balanced-v1` sin selección automática de Brainstorm.
+Conclusión de Fase 12: Brainstorm v1 queda **operativo en producción**,
+manteniendo `balanced-v1` sin selección automática de Brainstorm.
+
+### Hardening post-rollout: límites semánticos de todas las etapas
+
+Fecha: 2026-09-25.
+
+Tras el hotfix de refinement se auditó el mismo contrato en `proposals`,
+`evaluation` y `validation`. Se confirmó que sus validators aplicaban límites
+de longitud/listas que no estaban explicitados en los prompts; los JSON Schemas
+eran y siguen siendo intencionadamente estructurales.
+
+El commit `52832ab` elimina la duplicación manual:
+
+- `proposals` genera sus límites desde `PROPOSAL_TEXT` y
+  `PROPOSAL_LISTS`;
+- `evaluation` desde `EVALUATION_LISTS`;
+- `refinement` desde `REFINEMENT_TEXT` y `REFINEMENT_LISTS`;
+- `validation` desde `VALIDATION_LISTS`;
+- un único helper renderiza los límites y los tests demuestran que cambiar una
+  constante del core cambia automáticamente el prompt.
+
+TDD: los nuevos tests fallaron contra el código productivo previo y la suite
+final quedó en **559 passed**, además de `compileall` y `git diff --check`.
+
+Smoke productivo posterior al despliegue:
+
+- job `20fee417-1944-487f-abac-17580656018d`;
+- `attempt=1`, seis llamadas reales, `model_calls=6`;
+- `retries_used=0`, `stage_retries={}`, ninguna `call-0002`;
+- resultado `DONE / RECOMMENDED_FOR_PILOT`;
+- ganadora `C02` (Codex), final 81.5, confianza `MEDIUM`;
+- prompts runtime verificados: proposals con sus límites de texto/listas,
+  evaluation `10x500`, validation `10x1000`;
+- tres sondas Codex `PASS`, 35 checks cada una y cero fallos;
+- fingerprint Git idéntico, HEAD
+  `815a871b350cbfa26cc143e3822fe9d35e08ce00`;
+- hashes y bytes de artifacts recalculados y coincidentes;
+- el Markdown completo alcanzó 34903 bytes y ejercitó correctamente el fallback
+  `brainstorm-report.inline.md` de 1322 bytes.
+
+El proyecto temporal del smoke se retiró del registry. La evidencia del job se
+conserva para trazabilidad.
 
 Los motores existentes, tasks sin `execution_engine`, resultados heredados,
 artefactos existentes y `HybridAdapter` conservan su comportamiento.
@@ -1401,7 +1442,7 @@ Los tres documentos canónicos se actualizaron tras el E2E distribuido:
 - `docs/hermes-project-registry.md`
 - `docs/hermes-claude-integration.md`
 
-Estado operativo: **Brainstorm v1 está desplegado permanentemente y validado en producción** en `569eb8c`. Se mantiene explicit-only; `balanced-v1` no lo selecciona automáticamente.
+Estado operativo: **Brainstorm v1 está desplegado permanentemente y validado en producción** en `52832ab`. Se mantiene explicit-only; `balanced-v1` no lo selecciona automáticamente.
 
 ## Criterios de aceptación
 
@@ -1440,4 +1481,5 @@ propio; `balanced-v2` queda aplazado.
 9. Smoke real local en `main-linux`. HECHO.
 10. E2E distribuido con aprobación de despliegue temporal. HECHO.
 11. Actualización de los tres documentos canónicos y cierre documental. HECHO.
-12. Revisión humana final, merge/push, despliegue permanente, hotfix y smoke productivo. HECHO (`569eb8c`).
+12. Revisión humana final, merge/push, despliegue permanente, hotfix y smoke productivo. HECHO.
+12b. Hardening post-rollout: límites semánticos de todas las etapas derivados de `brainstorm_core`, smoke productivo PASS. HECHO (`52832ab`).

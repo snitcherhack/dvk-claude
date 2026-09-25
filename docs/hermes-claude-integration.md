@@ -178,7 +178,25 @@ El segundo smoke productivo (`0fec7b57-bbf5-442d-9069-2793e8970332`) terminó
 tres sondas Codex `PASS` (35 checks cada una), once artefactos verificados y
 fingerprint Git idéntico. Una llamada Claude-refinement dirigida sobre los
 inputs del fallo original produjo después un título válido de 111 caracteres
-con `max_turns=12`. Brainstorm v1 queda operativo en producción en `569eb8c`.
+con `max_turns=12`.
+
+Post-rollout, se revisaron las otras etapas y se confirmó el mismo riesgo de
+desalineación: `proposals`, `evaluation` y `validation` validaban límites
+semánticos que no aparecían en sus prompts. El hardening `52832ab` elimina los
+límites escritos a mano: los cuatro prompts renderizan sus restricciones desde
+`PROPOSAL_TEXT`, `PROPOSAL_LISTS`, `EVALUATION_LISTS`, `REFINEMENT_TEXT`,
+`REFINEMENT_LISTS` y `VALIDATION_LISTS` de `brainstorm_core`. Los JSON Schemas
+siguen siendo estructurales; la semántica continúa siendo autoridad de los
+validators. La suite quedó en 559 tests.
+
+El smoke productivo `20fee417-1944-487f-abac-17580656018d`, con una pregunta
+intencionadamente detallada, terminó `DONE / RECOMMENDED_FOR_PILOT` con seis
+llamadas, cero retries y `stage_retries={}`. Los prompts reales mostraron los
+límites esperados; las tres sondas Codex dieron `PASS` (35 checks), los hashes
+de artefactos coincidieron y el fingerprint Git permaneció idéntico. Como el
+informe completo superó 32 KiB, también se verificó el fallback
+`brainstorm-report.inline.md`. Brainstorm v1 queda operativo en producción en
+`52832ab`.
 
 ## Secuencia de implementación
 
@@ -193,5 +211,6 @@ con `max_turns=12`. Brainstorm v1 queda operativo en producción en `569eb8c`.
 9. Brainstorm v1 explicit-only: contrato, core, aislamiento Claude/Codex, adapter y worker multi-engine. HECHO.
 10. Integración local con fakes y smoke real local Claude+Codex. HECHO.
 11. E2E distribuido Brainstorm `hermes01 -> main-linux -> hermes01`. HECHO.
-12. Merge/push, despliegue permanente y smoke productivo de Brainstorm v1. HECHO; hotfix de refinement incluido en `569eb8c`.
+12. Merge/push, despliegue permanente y smoke productivo de Brainstorm v1. HECHO.
+12b. Hardening post-rollout: límites de todas las etapas derivados de `brainstorm_core`, smoke productivo PASS en `52832ab`. HECHO.
 13. Cualquier selección automática de Brainstorm o `balanced-v2`. FUERA DE v1 / APLAZADO.
