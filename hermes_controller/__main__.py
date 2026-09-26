@@ -127,13 +127,7 @@ def main() -> None:
 
         if args.command == "gate":
             if args.gate_command == "status":
-                job_status = controller.status(args.job_id)
-                out = {
-                    "job_id": args.job_id,
-                    "state": job_status["state"],
-                    "gate": job_status["gate"],
-                    "decisions": controller.gate_history(args.job_id),
-                }
+                out = controller.gate_status(args.job_id)
             elif args.gate_command == "approve":
                 out = controller.approve_gate(
                     args.job_id, args.gate_name, actor=args.actor, note=args.note,

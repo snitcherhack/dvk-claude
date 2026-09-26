@@ -12,12 +12,13 @@ import pytest
 from hermes_controller.adapters import AdapterResult
 from hermes_controller.api import serve
 from hermes_controller.clock import FakeClock
-from hermes_controller.controller import Controller, ControllerError
+from hermes_controller.controller import Controller, ControllerError, GateConflictError
 from hermes_controller.worker import WorkerDaemon
 
 
 GATE_A = "INFRASTRUCTURE_APPLY_APPROVAL_REQUIRED"
 GATE_B = "LICENSE_REVIEW_REQUIRED"
+GATE_PHASE14 = "HERMES_PHASE14_TELEGRAM_TEST"
 WORKER = {
     "worker_id": "main-linux",
     "platform": "linux",
@@ -82,9 +83,10 @@ def core(tmp_path):
 
 
 def wait_for_gate(controller, *, policy="safe_retry", gates=None):
-    job = controller.enqueue(task(policy=policy, gates=gates or [GATE_A]))
+    declared = gates or [GATE_A]
+    job = controller.enqueue(task(policy=policy, gates=declared))
     claim = controller.claim("main-linux")
-    controller.ingest_result(envelope(claim))
+    controller.ingest_result(envelope(claim, gate=declared[0]))
     return job, claim
 
 
@@ -104,6 +106,85 @@ def test_wait_user_exposes_sanitized_gate_summary_and_audit_history(core):
     serialized = json.dumps(status)
     assert claim["lease_token"] not in serialized
     assert "actor" not in serialized and "note" not in serialized
+
+
+def test_pending_gates_exposes_only_public_wait_metadata(core):
+    controller, _ = core
+    job, claim = wait_for_gate(controller, gates=[GATE_PHASE14])
+    queued = controller.enqueue(task(gates=[GATE_A]))
+
+    pending = controller.pending_gates()
+    assert pending == [{
+        "job_id": job,
+        "project": "test",
+        "gate": GATE_PHASE14,
+        "source_run_id": claim["run_id"],
+        "attempt": 1,
+        "summary": "gate test",
+    }]
+    assert queued not in {item["job_id"] for item in pending}
+    serialized = json.dumps(pending)
+    assert claim["lease_token"] not in serialized
+    assert "task_file" not in serialized
+    assert "actor" not in serialized and "note" not in serialized
+
+    controller.approve_gate(
+        job, GATE_PHASE14, actor="deiv", source_run_id=claim["run_id"],
+    )
+    assert controller.pending_gates() == []
+
+
+def test_gate_resolution_rejects_stale_source_run_id(core):
+    controller, _ = core
+    job, first = wait_for_gate(controller, gates=[GATE_A, GATE_B])
+
+    with pytest.raises(GateConflictError, match="source run"):
+        controller.approve_gate(
+            job, GATE_A, actor="deiv", source_run_id="stale-run",
+        )
+
+    approved = controller.approve_gate(
+        job, GATE_A, actor="deiv", source_run_id=first["run_id"],
+    )
+    assert approved["source_run_id"] == first["run_id"]
+
+    second = controller.claim("main-linux")
+    controller.ingest_result(envelope(second, status="WAIT_USER", gate=GATE_B))
+
+    with pytest.raises(GateConflictError, match="source run"):
+        controller.reject_gate(
+            job, GATE_B, actor="deiv", source_run_id=first["run_id"],
+        )
+
+    rejected = controller.reject_gate(
+        job, GATE_B, actor="deiv", source_run_id=second["run_id"],
+    )
+    assert rejected["decision"] == "REJECTED"
+
+
+def test_human_gate_names_are_generic_but_conservative(core):
+    controller, _ = core
+    accepted = task(gates=[GATE_PHASE14])
+    controller.enqueue(accepted)
+
+    for invalid in ("telegram approval", "lower_case", "_LEADING", "A" * 129):
+        with pytest.raises(ControllerError, match="human_gates"):
+            controller.enqueue(task(gates=[invalid]))
+
+    with pytest.raises(ControllerError, match="human_gates"):
+        controller.enqueue(task(gates=[GATE_PHASE14, GATE_PHASE14]))
+
+    schema = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "hermes_controller" / "schemas" / "hermes-task.schema.json"
+        ).read_text(encoding="utf-8")
+    )
+    gate_items = schema["properties"]["human_gates"]["items"]
+    assert "enum" not in gate_items
+    assert gate_items["type"] == "string"
+    assert gate_items["pattern"] == "^[A-Z][A-Z0-9_]{0,127}$"
+    assert schema["properties"]["human_gates"]["uniqueItems"] is True
 
 
 def test_approve_requeues_safe_retry_and_claim_carries_only_approved_gate(core):
@@ -406,6 +487,95 @@ def test_http_operator_gate_api_is_separate_from_worker_auth(tmp_path):
         )
         assert "operator-token" not in db_dump
         assert "worker-token" not in json.dumps(controller.status(job))
+    finally:
+        server.shutdown()
+        server.server_close()
+        controller.close()
+
+
+def test_http_operator_pending_and_stale_source_run_conflict(tmp_path):
+    controller = Controller(tmp_path / "controller")
+    controller.register_worker(WORKER)
+    job, claim = wait_for_gate(controller, gates=[GATE_PHASE14])
+    server = serve(
+        controller, port=0,
+        enrollment_tokens={"main-linux": "worker-token"},
+        operator_token="operator-token",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        status_code, payload = _operator_request(
+            base, "/v1/gates/pending", "operator-token",
+        )
+        assert status_code == 200
+        assert payload == {"gates": [{
+            "job_id": job,
+            "project": "test",
+            "gate": GATE_PHASE14,
+            "source_run_id": claim["run_id"],
+            "attempt": 1,
+            "summary": "gate test",
+        }]}
+
+        request = urllib.request.Request(
+            base + "/v1/gates/approve",
+            data=json.dumps({
+                "job_id": job,
+                "gate": GATE_PHASE14,
+                "source_run_id": "stale-run",
+                "actor": "telegram:123",
+            }).encode("utf-8"),
+            headers={
+                "Authorization": "Bearer operator-token",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(request, timeout=5)
+        assert exc.value.code == 409
+        conflict = json.loads(exc.value.read())
+        assert "source run" in conflict["error"]
+
+        status_code, approved = _operator_request(
+            base, "/v1/gates/approve", "operator-token",
+            body={
+                "job_id": job,
+                "gate": GATE_PHASE14,
+                "source_run_id": claim["run_id"],
+                "actor": "telegram:123",
+            },
+        )
+        assert status_code == 200
+        assert approved["decision"] == "APPROVED"
+
+        request = urllib.request.Request(
+            base + "/v1/gates/reject",
+            data=json.dumps({
+                "job_id": job,
+                "gate": GATE_PHASE14,
+                "source_run_id": claim["run_id"],
+                "actor": "telegram:123",
+            }).encode("utf-8"),
+            headers={
+                "Authorization": "Bearer operator-token",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(request, timeout=5)
+        assert exc.value.code == 409
+        assert "already resolved" in json.loads(exc.value.read())["error"]
+
+        status_code, shown = _operator_request(
+            base, f"/v1/gates/{job}", "operator-token",
+        )
+        assert status_code == 200
+        assert shown["source_run_id"] is None
+        assert shown["attempt"] == 1
     finally:
         server.shutdown()
         server.server_close()

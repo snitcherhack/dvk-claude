@@ -26,9 +26,14 @@ ENGINE_CAPABILITIES = {
     "brainstorm": {"codex", "claude"},
 }
 BRAINSTORM_ENGINE = "brainstorm"
+HUMAN_GATE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 
 
 class ControllerError(RuntimeError):
+    pass
+
+
+class GateConflictError(ControllerError):
     pass
 
 
@@ -520,14 +525,61 @@ class Controller:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def approve_gate(self, job_id: str, gate: str, *, actor: str, note: str | None = None) -> dict[str, Any]:
-        return self._resolve_gate(job_id, gate, "APPROVED", actor=actor, note=note)
+    def gate_status(self, job_id: str) -> dict[str, Any]:
+        status = self.status(job_id)
+        _, source_run_id = self._current_waiting_gate(job_id)
+        return {
+            "job_id": job_id,
+            "state": status["state"],
+            "attempt": status["attempt"],
+            "source_run_id": source_run_id if status["state"] == "WAIT_USER" else None,
+            "gate": status["gate"],
+            "decisions": self.gate_history(job_id),
+        }
 
-    def reject_gate(self, job_id: str, gate: str, *, actor: str, note: str | None = None) -> dict[str, Any]:
-        return self._resolve_gate(job_id, gate, "REJECTED", actor=actor, note=note)
+    def pending_gates(self) -> list[dict[str, Any]]:
+        rows = self.db.execute(
+            """SELECT job_id, task_json, attempt
+               FROM jobs
+               WHERE state='WAIT_USER'
+               ORDER BY created_at, job_id"""
+        ).fetchall()
+        pending: list[dict[str, Any]] = []
+        for row in rows:
+            gate, source_run_id = self._current_waiting_gate(row["job_id"])
+            if gate is None or source_run_id is None:
+                continue
+            task = json.loads(row["task_json"])
+            result, _, _ = self._latest_terminal_result(row["job_id"])
+            pending.append({
+                "job_id": row["job_id"],
+                "project": task["project"],
+                "gate": gate,
+                "source_run_id": source_run_id,
+                "attempt": row["attempt"],
+                "summary": result["summary"] if result else "",
+            })
+        return pending
+
+    def approve_gate(
+        self, job_id: str, gate: str, *, actor: str, note: str | None = None,
+        source_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._resolve_gate(
+            job_id, gate, "APPROVED", actor=actor, note=note, source_run_id=source_run_id,
+        )
+
+    def reject_gate(
+        self, job_id: str, gate: str, *, actor: str, note: str | None = None,
+        source_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._resolve_gate(
+            job_id, gate, "REJECTED", actor=actor, note=note, source_run_id=source_run_id,
+        )
 
     def _resolve_gate(
         self, job_id: str, gate: str, decision: str, *, actor: str, note: str | None,
+        source_run_id: str | None,
     ) -> dict[str, Any]:
         if not isinstance(job_id, str) or not job_id or not isinstance(gate, str) or not gate:
             raise ControllerError("job_id and gate are required")
@@ -538,6 +590,8 @@ class Controller:
         actor = actor.strip()
         if note is not None and (not isinstance(note, str) or len(note) > 2_000 or "\x00" in note):
             raise ControllerError("invalid gate note")
+        if source_run_id is not None and (not isinstance(source_run_id, str) or not source_run_id):
+            raise ControllerError("invalid source_run_id")
 
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -554,19 +608,23 @@ class Controller:
                 (job_id, gate),
             ).fetchone()
             if existing is not None:
+                if source_run_id is not None and source_run_id != existing["source_run_id"]:
+                    raise GateConflictError("gate source run does not match the recorded decision")
                 if existing["decision"] != decision:
-                    raise ControllerError(f"gate already resolved as {existing['decision']}")
+                    raise GateConflictError(f"gate already resolved as {existing['decision']}")
                 self.db.execute("COMMIT")
                 return dict(existing)
 
             if job["state"] != "WAIT_USER":
-                raise ControllerError("job is not waiting for a human gate")
+                raise GateConflictError("job is not waiting for a human gate")
             task = json.loads(job["task_json"])
             if gate not in task.get("human_gates", []):
                 raise ControllerError("gate is not declared by the task")
-            current_gate, source_run_id = self._current_waiting_gate(job_id)
-            if current_gate != gate or source_run_id is None:
-                raise ControllerError(f"gate is not the current waiting gate: {current_gate}")
+            current_gate, current_source_run_id = self._current_waiting_gate(job_id)
+            if current_gate != gate or current_source_run_id is None:
+                raise GateConflictError(f"gate is not the current waiting gate: {current_gate}")
+            if source_run_id is not None and source_run_id != current_source_run_id:
+                raise GateConflictError("gate source run does not match the current waiting run")
 
             if decision == "APPROVED":
                 disposition = "QUEUED" if bool(job["idempotent"]) else "NEEDS_RECONCILIATION"
@@ -575,7 +633,7 @@ class Controller:
             now = self.clock.now()
             self.db.execute(
                 "INSERT INTO gate_decisions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (job_id, gate, decision, actor, note, now, source_run_id, disposition),
+                (job_id, gate, decision, actor, note, now, current_source_run_id, disposition),
             )
             self.db.execute(
                 "UPDATE jobs SET state=?, active_run_id=NULL WHERE job_id=? AND state='WAIT_USER'",
@@ -583,7 +641,7 @@ class Controller:
             )
             self._event(
                 "job", job_id, f"GATE_{decision}", gate=gate, actor=actor,
-                source_run_id=source_run_id, disposition=disposition,
+                source_run_id=current_source_run_id, disposition=disposition,
             )
             if disposition == "QUEUED":
                 self._event("job", job_id, "JOB_RESUMED", gate=gate)
@@ -599,7 +657,7 @@ class Controller:
                 "actor": actor,
                 "note": note,
                 "decided_at": now,
-                "source_run_id": source_run_id,
+                "source_run_id": current_source_run_id,
                 "disposition": disposition,
             }
         except Exception:
@@ -795,6 +853,13 @@ class Controller:
         capabilities = task.get("required_capabilities")
         if not isinstance(capabilities, list) or any(not isinstance(item, str) or not item for item in capabilities):
             raise ControllerError("invalid required_capabilities")
+        gates = task.get("human_gates")
+        if (
+            not isinstance(gates, list)
+            or len(gates) != len(set(gates))
+            or any(not isinstance(gate, str) or HUMAN_GATE_RE.fullmatch(gate) is None for gate in gates)
+        ):
+            raise ControllerError("invalid human_gates")
         if task.get("worker_id") is not None and (not isinstance(task["worker_id"], str) or not task["worker_id"]):
             raise ControllerError("invalid worker_id")
         engine = task.get("execution_engine")
