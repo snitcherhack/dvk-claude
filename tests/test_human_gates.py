@@ -625,3 +625,46 @@ def test_cli_gate_approve_and_status(tmp_path):
     assert gate_status["job_id"] == job
     assert gate_status["decisions"][0]["actor"] == "deiv"
     assert gate_status["decisions"][0]["note"] == "cli approval"
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+@pytest.mark.parametrize("case,expected", [("missing", 404), ("malformed", 400), ("unauthorized", 401), ("stale", 409)])
+def test_gate_http_error_contract(tmp_path, action, case, expected):
+    controller = Controller(tmp_path / "controller")
+    controller.register_worker(WORKER)
+    job, claim = wait_for_gate(controller)
+    server = serve(controller, port=0, operator_token="test-operator")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    body = {"job_id": job, "gate": GATE_A, "actor": "test", "source_run_id": claim["run_id"]}
+    token = "test-operator"
+    if case == "missing":
+        body["job_id"] = "nonexistent-job"
+    elif case == "malformed":
+        body.pop("actor")
+    elif case == "unauthorized":
+        token = "test-worker"
+    else:
+        body["source_run_id"] = "old-run"
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/v1/gates/{action}",
+            data=json.dumps(body).encode(),
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        assert error.value.code == expected
+        assert controller.status(job)["state"] == "WAIT_USER"
+        assert controller.gate_history(job) == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+        controller.close()
+
+
+@pytest.mark.parametrize("invalid", [[{}], [[]], ["A\n"]])
+def test_gate_names_reject_malformed_values(core, invalid):
+    controller, _ = core
+    with pytest.raises(ControllerError, match="human_gates"):
+        controller.enqueue(task(gates=invalid))

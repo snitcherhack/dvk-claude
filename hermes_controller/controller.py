@@ -33,6 +33,10 @@ class ControllerError(RuntimeError):
     pass
 
 
+class JobNotFoundError(ControllerError):
+    pass
+
+
 class GateConflictError(ControllerError):
     pass
 
@@ -463,7 +467,7 @@ class Controller:
     def status(self, job_id: str) -> dict[str, Any]:
         job = self.db.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
         if job is None:
-            raise ControllerError(f"unknown job: {job_id}")
+            raise JobNotFoundError(f"unknown job: {job_id}")
         runs = self.db.execute("SELECT run_id, attempt, worker_id, state, lease_expires_at FROM runs WHERE job_id=? ORDER BY attempt", (job_id,)).fetchall()
         task = json.loads(job["task_json"])
         result, artifacts, hashes = self._latest_terminal_result(job_id)
@@ -517,7 +521,7 @@ class Controller:
 
     def gate_history(self, job_id: str) -> list[dict[str, Any]]:
         if self.db.execute("SELECT 1 FROM jobs WHERE job_id=?", (job_id,)).fetchone() is None:
-            raise ControllerError(f"unknown job: {job_id}")
+            raise JobNotFoundError(f"unknown job: {job_id}")
         rows = self.db.execute(
             """SELECT job_id, gate, decision, actor, note, decided_at, source_run_id, disposition
                FROM gate_decisions WHERE job_id=? ORDER BY decided_at, gate""",
@@ -600,7 +604,7 @@ class Controller:
                 (job_id,),
             ).fetchone()
             if job is None:
-                raise ControllerError(f"unknown job: {job_id}")
+                raise JobNotFoundError(f"unknown job: {job_id}")
 
             existing = self.db.execute(
                 """SELECT job_id, gate, decision, actor, note, decided_at, source_run_id, disposition
@@ -856,8 +860,8 @@ class Controller:
         gates = task.get("human_gates")
         if (
             not isinstance(gates, list)
-            or len(gates) != len(set(gates))
             or any(not isinstance(gate, str) or HUMAN_GATE_RE.fullmatch(gate) is None for gate in gates)
+            or len(gates) != len(set(gates))
         ):
             raise ControllerError("invalid human_gates")
         if task.get("worker_id") is not None and (not isinstance(task["worker_id"], str) or not task["worker_id"]):

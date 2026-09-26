@@ -9,7 +9,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from .controller import Controller, ControllerError, GateConflictError, StaleResultError
+from .controller import Controller, ControllerError, GateConflictError, JobNotFoundError, StaleResultError
 
 
 MAX_BODY_BYTES = 4 * 1024 * 1024
@@ -159,6 +159,8 @@ class ControllerRequestHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/runs/result":
                 self.server.controller.ingest_result(body); self._reply(200, {"ingested": True}); return
             self._reply(404, {"error": "not found"})
+        except JobNotFoundError as exc:
+            self._reply(404, {"error": str(exc)})
         except (StaleResultError, GateConflictError) as exc:
             self._reply(409, {"error": str(exc)})
         except (ControllerError, KeyError, ValueError, json.JSONDecodeError) as exc:
