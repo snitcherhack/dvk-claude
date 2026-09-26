@@ -64,8 +64,9 @@ Base auditada:
 
 Estado:
 
-- `main == origin/main`;
-- working tree limpio;
+- checkout productivo `main` en `bfcab25d`, working tree limpio;
+- el `origin/main` upstream ha avanzado de forma masiva respecto a esa revisión; Fase 14 no incluye actualizar/rebasar Hermes Agent ni mezclar ese upgrade con la integración DVK;
+- la feature del gateway parte exactamente de la revisión productiva actual para aislar el cambio;
 - `hermes-gateway.service` activo;
 - Telegram usa `python-telegram-bot 22.6`;
 - ya existen `InlineKeyboardMarkup`, `CallbackQueryHandler` y callbacks
@@ -307,12 +308,9 @@ Los gates reales de alto impacto siguen siendo solo informativos.
 
 No se copiará `HERMES_OPERATOR_TOKEN` a Git, config.yaml, logs ni DB.
 
-Antes del despliegue se preparará un fichero privado común, chmod 0600, fuera
-de repos, consumido por systemd. El Controller y el gateway podrán leer el
-mismo operator token; la CLI local continúa usando el Controller directamente
-y no necesita ese token HTTP.
+Antes del despliegue se preparará `/home/snitcher/.config/dvk-hermes/operator.env`, fichero privado mínimo `chmod 0600`, fuera de repos y consumido por systemd. Contendrá únicamente `HERMES_OPERATOR_TOKEN`. El token se retirará de `controller.env` para no mantener dos copias activas del mismo secreto; Controller y gateway leerán `operator.env`. La CLI local continúa usando el Controller directamente y no necesita ese token HTTP.
 
-El token del worker nunca se entrega al gateway.
+La configuración no secreta del bridge (`HERMES_GATE_BRIDGE_ENABLED`, URL, allow-lists, gate accionable, state DB, intervalos) irá en un drop-in/env privado separado del gateway. El token del worker nunca se entrega al gateway.
 
 ## E2E previsto
 
@@ -332,16 +330,38 @@ Casos:
 8. restart del gateway con prompt pendiente -> sin duplicado y callback útil;
 9. operator token inválido -> bridge fail-closed.
 
+## Validación pre-E2E
+
+Estado local verificado el 26 de septiembre de 2026:
+
+- Controller feature `65a7379`: `18/18` tests dirigidos de Human Gates y
+  **577 tests** globales; `compileall` y `git diff --check` PASS.
+- Gateway feature `5fdbfc1e`: `16/16` tests dirigidos del bridge y
+  **446 tests** Telegram/gateway; `compileall` y `git diff --check` PASS.
+- Smoke HTTP real del bridge contra un servidor local temporal: PASS;
+  `GET /pending -> callback hg:a:<opaque-id> -> POST approve` transportó el
+  `source_run_id`, usó actor `telegram:<user_id>`, recibió
+  `APPROVED/QUEUED`, persistió `RESOLVED` y actualizó el prompt.
+- Producción no tiene `HERMES_GATE_BRIDGE_ENABLED`; desplegar el código del
+  gateway sin la configuración nueva no activa polling ni botones de gates.
+
 ## Gates antes de producción
 
-Todavía faltan:
+Completado:
 
-1. validación completa y commits locales en ambos repos;
-2. identificación de los Telegram user IDs y chat IDs que podrán aprobar;
-3. aprobación humana del despliegue temporal/E2E;
-4. E2E real con Telegram;
-5. revisión humana antes de merge/push del Controller y antes de modificar el
-   checkout/servicio productivo del gateway.
+1. diseño;
+2. implementación local en ambos repos;
+3. validación estática, suites ampliadas y smoke HTTP sin Telegram real.
+
+Pendiente:
+
+1. identificar/autorizar de forma explícita los Telegram user IDs y chat IDs
+   que podrán aprobar el gate ficticio del E2E;
+2. aprobación humana del despliegue temporal/E2E;
+3. E2E real con Telegram;
+4. rollback del despliegue temporal y revisión de evidencia;
+5. revisión humana antes de merge/push del Controller y antes de modificar
+   permanentemente el checkout/servicio productivo del gateway.
 
 No se habilitarán gates de publicación, render, infraestructura o pentest en
 Telegram durante esta fase.
