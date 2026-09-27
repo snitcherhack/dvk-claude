@@ -298,6 +298,14 @@ token again received HTTP 401, the persisted task contained no human-decision
 metadata, the materialized gate context contained only the approved gate name,
 and the disposable repository remained unchanged.
 
+Phase 14 adds a read-only operator listing endpoint, `GET /v1/gates/pending`,
+containing only `job_id`, project, gate, source run, attempt and public summary.
+Telegram resolutions always bind to `source_run_id`; stale waits and conflicting
+resolutions become HTTP 409 while malformed requests remain 400. The published
+`human_gates` schema is aligned with runtime validation using unique uppercase
+names matching `^[A-Z][A-Z0-9_]{0,127}$`, rather than the historical fixed enum.
+These Phase 14 changes are implemented locally but not yet deployed.
+
 ## Optional project workspaces
 
 A project may declare named external workspaces that are not Git repositories.
