@@ -125,7 +125,7 @@ if [[ -z "$RUN_OUTPUT_DIR" ]]; then
     echo "ERROR: --run-output-dir es obligatorio" >&2
     exit 2
 fi
-if [[ ! -d "$WORKING_DIRECTORY" || ! -d "$WORKING_DIRECTORY/.git" ]]; then
+if [[ ! -d "$WORKING_DIRECTORY" || ! -e "$WORKING_DIRECTORY/.git" ]]; then
     echo "ERROR: working directory no es un repositorio Git: $WORKING_DIRECTORY" >&2
     exit 2
 fi

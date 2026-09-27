@@ -179,6 +179,46 @@ def test_project_agnostic_runner_dry_run_has_no_video_dependency(tmp_path):
     assert not state_home.exists()
 
 
+def test_project_agnostic_runner_dry_run_accepts_linked_worktree(tmp_path):
+    runner = Path(__file__).parents[1] / "hermes-codex-run.sh"
+    source = tmp_path / "source"
+    work = tmp_path / "repo-worktree"
+    task_dir = tmp_path / "tasks"
+    out = tmp_path / "runtime"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(["git", "-C", str(source), "config", "user.name", "Hermes Test"], check=True)
+    subprocess.run(["git", "-C", str(source), "config", "user.email", "hermes@example.invalid"], check=True)
+    (source / "README.md").write_text("base", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-q", "-m", "base"], check=True)
+    subprocess.run(["git", "-C", str(source), "worktree", "add", "-q", "-b", "test-worktree", str(work)], check=True)
+    assert (work / ".git").is_file()
+
+    task_dir.mkdir()
+    task_file = task_dir / "task.md"
+    task_file.write_text("generic task", encoding="utf-8")
+    environment = {
+        **os.environ,
+        "XDG_STATE_HOME": str(tmp_path / "state-home"),
+        "HERMES_CODEX_CLI": "/bin/true",
+    }
+    result = subprocess.run(
+        [
+            runner, "--dry-run",
+            "--working-directory", str(work),
+            "--task-file", str(task_file),
+            "--run-output-dir", str(out),
+            "--allowed-path", str(work),
+            "--allowed-path", str(task_dir),
+            "--allowed-path", str(out),
+        ],
+        text=True, capture_output=True, env=environment, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"cwd: {work}" in result.stdout
+
+
 def test_project_agnostic_runner_rejects_path_outside_task_scope(tmp_path):
     runner = Path(__file__).parents[1] / "hermes-codex-run.sh"
     work = tmp_path / "repo"
