@@ -71,6 +71,14 @@ realpath_within() {
     [[ "$candidate" == "$root" || "$candidate" == "$root"/* ]]
 }
 
+is_git_worktree_root() {
+    local candidate git_root
+    candidate="$(realpath -e -- "$1" 2>/dev/null)" || return 1
+    git_root="$(git -C "$candidate" rev-parse --show-toplevel 2>/dev/null)" || return 1
+    git_root="$(realpath -e -- "$git_root" 2>/dev/null)" || return 1
+    [[ "$candidate" == "$git_root" ]]
+}
+
 LOCK_DIR="$STATE_DIR/hermes-codex-run.lock"
 
 acquire_lock() {
@@ -125,8 +133,8 @@ if [[ -z "$RUN_OUTPUT_DIR" ]]; then
     echo "ERROR: --run-output-dir es obligatorio" >&2
     exit 2
 fi
-if [[ ! -d "$WORKING_DIRECTORY" || ! -e "$WORKING_DIRECTORY/.git" ]]; then
-    echo "ERROR: working directory no es un repositorio Git: $WORKING_DIRECTORY" >&2
+if [[ ! -d "$WORKING_DIRECTORY" ]] || ! is_git_worktree_root "$WORKING_DIRECTORY"; then
+    echo "ERROR: working directory no es la raíz de un repositorio Git: $WORKING_DIRECTORY" >&2
     exit 2
 fi
 if [[ ! -f "$TASK_FILE" ]]; then

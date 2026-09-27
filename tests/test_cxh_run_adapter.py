@@ -153,8 +153,7 @@ def test_project_agnostic_runner_dry_run_has_no_video_dependency(tmp_path):
     work = tmp_path / "repo"
     task_dir = tmp_path / "tasks"
     out = tmp_path / "runtime"
-    work.mkdir()
-    (work / ".git").mkdir()
+    subprocess.run(["git", "init", "-q", str(work)], check=True)
     task_dir.mkdir()
     task_file = task_dir / "task.md"
     task_file.write_text("generic task")
@@ -219,13 +218,69 @@ def test_project_agnostic_runner_dry_run_accepts_linked_worktree(tmp_path):
     assert f"cwd: {work}" in result.stdout
 
 
+def test_project_agnostic_runner_rejects_fake_git_marker(tmp_path):
+    runner = Path(__file__).parents[1] / "hermes-codex-run.sh"
+    work = tmp_path / "not-a-repo"
+    task_dir = tmp_path / "tasks"
+    out = tmp_path / "runtime"
+    work.mkdir()
+    (work / ".git").write_text("not a gitdir\n", encoding="utf-8")
+    task_dir.mkdir()
+    task_file = task_dir / "task.md"
+    task_file.write_text("generic task", encoding="utf-8")
+    result = subprocess.run(
+        [
+            runner, "--dry-run",
+            "--working-directory", str(work),
+            "--task-file", str(task_file),
+            "--run-output-dir", str(out),
+            "--allowed-path", str(work),
+            "--allowed-path", str(task_dir),
+            "--allowed-path", str(out),
+        ],
+        text=True, capture_output=True,
+        env={**os.environ, "HERMES_CODEX_CLI": "/bin/true"},
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "no es la raíz de un repositorio Git" in result.stderr
+
+
+def test_project_agnostic_runner_rejects_git_subdirectory_as_root(tmp_path):
+    runner = Path(__file__).parents[1] / "hermes-codex-run.sh"
+    repo = tmp_path / "repo"
+    work = repo / "subdir"
+    task_dir = tmp_path / "tasks"
+    out = tmp_path / "runtime"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    work.mkdir()
+    task_dir.mkdir()
+    task_file = task_dir / "task.md"
+    task_file.write_text("generic task", encoding="utf-8")
+    result = subprocess.run(
+        [
+            runner, "--dry-run",
+            "--working-directory", str(work),
+            "--task-file", str(task_file),
+            "--run-output-dir", str(out),
+            "--allowed-path", str(repo),
+            "--allowed-path", str(task_dir),
+            "--allowed-path", str(out),
+        ],
+        text=True, capture_output=True,
+        env={**os.environ, "HERMES_CODEX_CLI": "/bin/true"},
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "no es la raíz de un repositorio Git" in result.stderr
+
+
 def test_project_agnostic_runner_rejects_path_outside_task_scope(tmp_path):
     runner = Path(__file__).parents[1] / "hermes-codex-run.sh"
     work = tmp_path / "repo"
     task_dir = tmp_path / "tasks"
     out = tmp_path / "runtime"
-    work.mkdir()
-    (work / ".git").mkdir()
+    subprocess.run(["git", "init", "-q", str(work)], check=True)
     task_dir.mkdir()
     task_file = task_dir / "task.md"
     task_file.write_text("generic task")

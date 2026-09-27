@@ -109,8 +109,12 @@ def env(tmp_path, monkeypatch) -> Env:
     (fake / "payload.json").write_text(json.dumps(PAYLOAD), encoding="utf-8")
 
     repo = tmp_path / "projects" / "repo"
-    (repo / ".git").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Hermes Test"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "hermes@example.invalid"], check=True)
     (repo / "README.md").write_text("repo", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "base"], check=True)
     job = tmp_path / "runtime" / "job-1"
     stage = job / "stages" / "codex-proposals"
     sibling = job / "stages" / "claude-proposals"
@@ -196,6 +200,21 @@ def test_structured_stage_returns_payload_untransformed(env):
     assert json.loads(stored.read_text(encoding="utf-8")) == PAYLOAD
     assert str(stored) in result.evidence
     assert str(env.stage / "isolation-probe.json") in result.evidence
+    assert result.metadata["isolation_probe"] == "PASS"
+
+
+def test_structured_stage_accepts_linked_worktree(env):
+    work = env.root / "projects" / "repo-worktree"
+    subprocess.run(
+        ["git", "-C", str(env.repo), "worktree", "add", "-q", "-b", "brainstorm-worktree", str(work)],
+        check=True,
+    )
+    assert (work / ".git").is_file()
+    env.repo = work
+
+    result = run(env)
+
+    assert result.payload == PAYLOAD
     assert result.metadata["isolation_probe"] == "PASS"
 
 
