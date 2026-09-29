@@ -165,7 +165,7 @@ run_brainstorm_stage() {
 
     local wd stage task_file
     wd="$(realpath -e -- "$WORKING_DIRECTORY")" || bs_fail "working directory inexistente"
-    [[ -d "$wd/.git" ]] || bs_fail "working directory no es un repositorio Git"
+    is_git_worktree_root "$wd" || bs_fail "working directory no es la raíz de un repositorio Git"
     stage="$(realpath -e -- "$RUN_OUTPUT_DIR")" || bs_fail "run output dir inexistente"
     [[ -d "$stage" ]] || bs_fail "run output dir debe ser un directorio"
     task_file="$(realpath -e -- "$TASK_FILE")" || bs_fail "task file inexistente"
