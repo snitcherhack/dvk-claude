@@ -140,6 +140,39 @@ def test_codex_run_adapter_passes_task_scoped_allowed_paths(tmp_path, monkeypatc
     assert allowed == [str(Path(spec["working_directory"]).resolve()), str((tmp_path / "brain").resolve())]
 
 
+def test_codex_runner_child_env_excludes_worker_and_api_secrets(tmp_path, monkeypatch):
+    spec = task(tmp_path)
+    write_result(spec)
+    seen = []
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("HERMES_CODEX_CLI", "/usr/bin/true")
+    monkeypatch.setenv("HERMES_MAIN_LINUX_TOKEN", "worker-token-canary")
+    monkeypatch.setenv("HERMES_OPERATOR_TOKEN", "operator-token-canary")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key-canary")
+    monkeypatch.setenv("SPIKE_TOKEN_CANARY", "arbitrary-token-canary")
+    monkeypatch.setattr(
+        adapters.subprocess,
+        "Popen",
+        lambda argv, **kw: (seen.append(kw) or Process(argv, **kw)),
+    )
+
+    result = codex_adapter(tmp_path).execute(spec)
+
+    assert result.status == "DONE"
+    child_env = seen[0]["env"]
+    assert child_env["HOME"] == str(tmp_path / "home")
+    assert child_env["PATH"] == "/usr/bin:/bin"
+    assert child_env["HERMES_CODEX_CLI"] == "/usr/bin/true"
+    for name in (
+        "HERMES_MAIN_LINUX_TOKEN",
+        "HERMES_OPERATOR_TOKEN",
+        "OPENAI_API_KEY",
+        "SPIKE_TOKEN_CANARY",
+    ):
+        assert name not in child_env
+
+
 def test_project_agnostic_runner_help():
     runner = Path(__file__).parents[1] / "hermes-codex-run.sh"
     result = subprocess.run([runner, "--help"], text=True, capture_output=True, check=False)
