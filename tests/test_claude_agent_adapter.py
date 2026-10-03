@@ -123,6 +123,41 @@ def test_configured_cli_path_must_exist(tmp_path):
     assert "CLI path is not available" in result.summary
 
 
+def test_claude_sdk_env_overrides_scrub_inherited_secrets(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))
+    monkeypatch.setenv("HERMES_MAIN_LINUX_TOKEN", "worker-token-canary")
+    monkeypatch.setenv("HERMES_OPERATOR_TOKEN", "operator-token-canary")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key-canary")
+    monkeypatch.setenv("SPIKE_TOKEN_CANARY", "arbitrary-token-canary")
+
+    adapter = ClaudeAgentAdapter(authorized_roots=[tmp_path])
+    request = {
+        "profile": "claude_smoke",
+        "cwd": str(tmp_path),
+        "authorized_roots": [str(tmp_path)],
+        "task_file": str(tmp_path / "task.md"),
+        "task_text": "Inspect.",
+        "allowed_tools": ["Read", "Glob", "Grep"],
+        "max_turns": 2,
+        "result_schema": {},
+    }
+
+    env = adapter._sdk_option_kwargs(request)["env"]
+
+    assert env["HOME"] == str(tmp_path / "home")
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["CLAUDE_CONFIG_DIR"] == str(tmp_path / "claude-config")
+    for name in (
+        "HERMES_MAIN_LINUX_TOKEN",
+        "HERMES_OPERATOR_TOKEN",
+        "OPENAI_API_KEY",
+        "SPIKE_TOKEN_CANARY",
+    ):
+        assert env[name] == ""
+
+
 def test_path_guard_accepts_only_authorized_roots(tmp_path, monkeypatch):
     root = tmp_path / "root"
     root.mkdir()

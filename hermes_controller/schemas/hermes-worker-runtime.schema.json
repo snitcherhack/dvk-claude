@@ -25,9 +25,14 @@
     }
   },
   "required": ["controller_url", "worker"],
+  "oneOf": [
+    {"required": ["token_env"]},
+    {"required": ["token_file"]}
+  ],
   "properties": {
     "controller_url": {"type": "string"},
-    "token_env": {"type": "string"},
+    "token_env": {"type": "string", "minLength": 1},
+    "token_file": {"type": "string", "minLength": 1},
     "state_file": {"type": "string"},
     "task_materialization_roots_env": {"type": "string"},
     "enabled": {"type": "boolean"},

@@ -14,6 +14,36 @@ from typing import Any, Callable, Protocol
 from .brainstorm_core import STAGE_SCHEMAS
 
 
+BASE_CHILD_ENV = (
+    "HOME",
+    "PATH",
+    "LANG",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "all_proxy",
+)
+
+
+def _allowlisted_child_env(extra: tuple[str, ...] = ()) -> dict[str, str]:
+    names = dict.fromkeys((*BASE_CHILD_ENV, *extra))
+    return {name: os.environ[name] for name in names if os.environ.get(name)}
+
+
+def _scrubbed_inherited_env(extra: tuple[str, ...] = ()) -> dict[str, str]:
+    allowed = set((*BASE_CHILD_ENV, *extra))
+    overrides = {name: "" for name in os.environ if name not in allowed}
+    for name in allowed:
+        value = os.environ.get(name)
+        if value:
+            overrides[name] = value
+    return overrides
+
+
 @dataclass(frozen=True)
 class AdapterResult:
     status: str = "DONE"
@@ -293,6 +323,17 @@ class ClaudeAgentAdapter:
     """Fail-closed bridge to Claude Agent SDK with deterministic tool boundaries."""
 
     MIN_SDK_VERSION = (0, 2, 140)
+    SDK_ENV_EXTRA = (
+        "CLAUDE_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    )
     READ_ONLY_TOOLS = ("Read", "Glob", "Grep")
     WRITE_TOOLS = ("Write", "Edit")
     DISALLOWED_TOOLS = ("Bash", "WebFetch", "WebSearch", "NotebookEdit")
@@ -509,6 +550,11 @@ class ClaudeAgentAdapter:
         )
         return "You are a Hermes execution worker. Follow the explicit tool and path policy exactly.", prompt
 
+    def _sdk_environment(self) -> dict[str, str]:
+        environment = _scrubbed_inherited_env(self.SDK_ENV_EXTRA)
+        environment["CLAUDE_CODE_ENTRYPOINT"] = "sdk-py"
+        return environment
+
     def _sdk_option_kwargs(self, request: dict[str, Any]) -> dict[str, Any]:
         """SDK options except hooks; existing profiles keep their exact options."""
         system_prompt, _prompt = self._build_prompt(request)
@@ -524,6 +570,7 @@ class ClaudeAgentAdapter:
             "setting_sources": [],
             "skills": [],
             "system_prompt": system_prompt,
+            "env": self._sdk_environment(),
         }
         if request["profile"] == self.BRAINSTORM_PROFILE:
             options.update({
@@ -698,6 +745,11 @@ class CxhRunAdapter:
 
     runner_name = "cxh-run"
     log_filename = "cxh-run.log"
+    RUNNER_ENV_EXTRA = (
+        "HERMES_BRAIN_DIR",
+        "WINNER_TIMELINE_QA_DIR",
+        "XDG_STATE_HOME",
+    )
 
     def __init__(self, *, runner_path: str | os.PathLike[str], authorized_roots: list[str | os.PathLike[str]],
                  execution_profiles: set[str] | None = None, task_types: set[str] | None = None) -> None:
@@ -738,7 +790,14 @@ class CxhRunAdapter:
         )
         try:
             with log.open("wb") as stream:
-                process = subprocess.Popen(argv, cwd=cwd, stdout=stream, stderr=subprocess.STDOUT, shell=False)
+                process = subprocess.Popen(
+                    argv,
+                    cwd=cwd,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    shell=False,
+                    env=self._runner_environment(),
+                )
                 try: exit_code = process.wait(timeout=timeout + 10)
                 except subprocess.TimeoutExpired:
                     process.terminate()
@@ -759,6 +818,9 @@ class CxhRunAdapter:
         evidence = [str(log), str(result_path), *[str(item) for item in result["evidence"]]]
         return AdapterResult(status=result["status"], summary=result["summary"], gate=result["gate"],
                              completed=result["completed"], remaining=result["remaining"], evidence=evidence)
+
+    def _runner_environment(self) -> dict[str, str]:
+        return _allowlisted_child_env(self.RUNNER_ENV_EXTRA)
 
     def _build_argv(self, *, task_type: str, cwd: Path, task_file: Path, output: Path,
                     profile: str, timeout: int, allowed_paths: list[Path]) -> list[str]:
@@ -786,11 +848,9 @@ class CodexRunAdapter(CxhRunAdapter):
     STRUCTURED_RESULT = "codex-structured.json"
     PROBE_REPORT = "isolation-probe.json"
     EXEC_LOG = "codex-exec.log"
-    # Positive allow-list for the runner process; the runner applies its own
-    # narrower env -i list to Codex. Values are never logged.
-    RUNNER_ENV = ("HOME", "PATH", "LANG", "HERMES_CODEX_CLI", "CODEX_HOME", "XDG_STATE_HOME",
-                  "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "ALL_PROXY",
-                  "https_proxy", "http_proxy", "no_proxy", "all_proxy")
+    # The runner receives the shared safe environment plus the Codex CLI
+    # location/config paths it needs. Worker/operator credentials are excluded.
+    RUNNER_ENV_EXTRA = (*CxhRunAdapter.RUNNER_ENV_EXTRA, "HERMES_CODEX_CLI", "CODEX_HOME")
     RUNNER_GRACE_SECONDS = 30
     RUNNER_EXIT_MESSAGES = {
         2: ("BLOCKED", "hermes-codex-run rejected the brainstorm stage"),
@@ -816,7 +876,7 @@ class CodexRunAdapter(CxhRunAdapter):
         except AdapterExecutionError as exc:
             raise StructuredExecutionError(exc.status, stage, str(exc), exc.evidence) from exc
         log = output / self.log_filename
-        environment = {name: os.environ[name] for name in self.RUNNER_ENV if os.environ.get(name)}
+        environment = self._runner_environment()
         try:
             with os.fdopen(self._fresh_file(log), "wb") as stream:
                 process = subprocess.Popen(argv, cwd=cwd, stdout=stream, stderr=subprocess.STDOUT, shell=False,
