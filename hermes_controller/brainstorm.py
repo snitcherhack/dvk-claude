@@ -139,13 +139,27 @@ def _sha256(data: bytes) -> str:
 
 # --- repository fingerprint --------------------------------------------------------------------
 
+def _git_environment() -> dict[str, str]:
+    """Minimal environment for read-only Git fingerprint subprocesses."""
+    environment = {
+        name: os.environ[name]
+        for name in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP")
+        if os.environ.get(name)
+    }
+    environment.update({
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "LC_ALL": "C",
+    })
+    return environment
+
+
 def _git(working_directory: Path, *args: str) -> bytes:
-    environment = {key: value for key, value in os.environ.items()
-                   if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"}}
-    environment.update({"GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"})
     return subprocess.run(
         ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", str(working_directory), *args],
-        capture_output=True, check=True, env=environment,
+        capture_output=True, check=True, env=_git_environment(),
     ).stdout
 
 
@@ -156,7 +170,14 @@ def repo_fingerprint(working_directory: Path) -> dict[str, Any]:
     except subprocess.CalledProcessError:
         head = "UNBORN"
     status = _git(working_directory, "status", "--porcelain=v2", "-z", "--untracked-files=all")
-    diff = _git(working_directory, "diff", "--binary", EMPTY_TREE if head == "UNBORN" else "HEAD")
+    diff = _git(
+        working_directory,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--binary",
+        EMPTY_TREE if head == "UNBORN" else "HEAD",
+    )
     untracked: dict[str, str] = {}
     for entry in status.split(b"\0"):
         if entry.startswith(b"? "):
