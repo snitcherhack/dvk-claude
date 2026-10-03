@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 MiniMax Video Generation Client - YouTube Pipeline.
 
@@ -28,21 +28,20 @@ import json
 import os
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
-
 
 # -- Constants ----------------------------------------------------------------
 API_BASE = "https://api.minimax.io"
 VIDEO_GENERATION_URL = f"{API_BASE}/v1/video_generation"
 QUERY_URL = f"{API_BASE}/v1/query/video_generation"
 FILE_URL_ENDPOINT = f"{API_BASE}/v1/files"
-DEFAULT_POLL_INTERVAL = 10   # seconds
-DEFAULT_MAX_ATTEMPTS = 60    # ~10 minutes at 10s interval
+DEFAULT_POLL_INTERVAL = 10  # seconds
+DEFAULT_MAX_ATTEMPTS = 60  # ~10 minutes at 10s interval
 DEFAULT_MODEL = "MiniMax-Hailuo-2.3-Fast"
 DEFAULT_RESOLUTION = "1080P"
-DEFAULT_DURATION = 6         # único disponible en Hailuo 2.3
+DEFAULT_DURATION = 6  # único disponible en Hailuo 2.3
 
 # -- Helpers -----------------------------------------------------------------
 
@@ -64,8 +63,13 @@ def load_api_key(project_dir: Path) -> str:
     return ""
 
 
-def api_request(method: str, url: str, api_key: str,
-                body: dict = None, description: str = "") -> dict:
+def api_request(
+    method: str,
+    url: str,
+    api_key: str,
+    body: dict | None = None,
+    description: str = "",
+) -> dict:
     """Make an HTTP request to MiniMax API. Returns parsed JSON or exits."""
     data = None
     if body:
@@ -120,8 +124,9 @@ def create_task(api_key: str, scene: dict, model: str, resolution: str) -> str:
         "resolution": resolution,
     }
 
-    result = api_request("POST", VIDEO_GENERATION_URL, api_key, body,
-                         f"Create {scene['id']}")
+    result = api_request(
+        "POST", VIDEO_GENERATION_URL, api_key, body, f"Create {scene['id']}"
+    )
 
     task_id = result.get("task_id", "")
     if not task_id:
@@ -135,14 +140,19 @@ def create_task(api_key: str, scene: dict, model: str, resolution: str) -> str:
     return task_id
 
 
-def poll_task(api_key: str, scene_id: str, task_id: str,
-              poll_interval: int, max_attempts: int) -> dict:
+def poll_task(
+    api_key: str, scene_id: str, task_id: str, poll_interval: int, max_attempts: int
+) -> dict:
     """Poll task status until completion. Returns final response dict."""
     for attempt in range(1, max_attempts + 1):
         time.sleep(poll_interval)
 
-        result = api_request("GET", f"{QUERY_URL}?task_id={task_id}",
-                            api_key, description=f"Poll {scene_id} #{attempt}")
+        result = api_request(
+            "GET",
+            f"{QUERY_URL}?task_id={task_id}",
+            api_key,
+            description=f"Poll {scene_id} #{attempt}",
+        )
 
         status = result.get("status", "Unknown")
         print(f"    [{scene_id}] attempt {attempt}/{max_attempts} -> {status}")
@@ -158,29 +168,43 @@ def poll_task(api_key: str, scene_id: str, task_id: str,
         else:
             print(f"    Unknown status: {status}, continuing...")
 
-    print(f"  ERROR: {scene_id} timed out after {max_attempts} attempts "
-          f"({max_attempts * poll_interval}s)")
+    print(
+        f"  ERROR: {scene_id} timed out after {max_attempts} attempts "
+        f"({max_attempts * poll_interval}s)"
+    )
     sys.exit(1)
 
 
 def get_download_url(api_key: str, file_id: str) -> str:
     """Get presigned download URL for a file."""
-    result = api_request("GET", f"{FILE_URL_ENDPOINT}/{file_id}/url",
-                        api_key, description=f"Get URL for {file_id}")
+    result = api_request(
+        "GET",
+        f"{FILE_URL_ENDPOINT}/{file_id}/url",
+        api_key,
+        description=f"Get URL for {file_id}",
+    )
     return result.get("download_url", "")
 
 
-def process_scene(api_key: str, scene: dict, clips_dir: Path,
-                  model: str, resolution: str,
-                  poll_interval: int, max_attempts: int,
-                  resume: bool) -> dict:
+def process_scene(
+    api_key: str,
+    scene: dict,
+    clips_dir: Path,
+    model: str,
+    resolution: str,
+    poll_interval: int,
+    max_attempts: int,
+    resume: bool,
+) -> dict:
     """Process a single scene: create -> poll -> download -> update state."""
     scene_id = scene["id"]
     mp4_path = clips_dir / f"{scene_id}.mp4"
 
     # -- Resume: skip already completed --
     if resume and mp4_path.exists():
-        print(f"  [{scene_id}] Already exists ({mp4_path.stat().st_size / 1024:.0f} KB) -> skip")
+        print(
+            f"  [{scene_id}] Already exists ({mp4_path.stat().st_size / 1024:.0f} KB) -> skip"
+        )
         return scene
 
     if resume and scene.get("status") == "Success" and scene.get("download_url"):
@@ -205,7 +229,7 @@ def process_scene(api_key: str, scene: dict, clips_dir: Path,
             download_url = get_download_url(api_key, file_id)
             scene["download_url"] = download_url
         else:
-            print(f"    WARNING: No file_id in response, trying raw result...")
+            print("    WARNING: No file_id in response, trying raw result...")
             download_url = result.get("download_url", "")
             if download_url:
                 scene["download_url"] = download_url
@@ -224,20 +248,24 @@ def process_scene(api_key: str, scene: dict, clips_dir: Path,
 # -- Entry Point --------------------------------------------------------------
 
 
-def minimax_client(json_path: str, poll_interval: int = DEFAULT_POLL_INTERVAL,
-                   max_attempts: int = DEFAULT_MAX_ATTEMPTS,
-                   dry_run: bool = False, resume: bool = True):
+def minimax_client(
+    json_path: str,
+    poll_interval: int = DEFAULT_POLL_INTERVAL,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    dry_run: bool = False,
+    resume: bool = True,
+):
     """Run the MiniMax video generation pipeline."""
-    json_path = Path(json_path).resolve()
+    config_path = Path(json_path).resolve()
 
-    if not json_path.exists():
-        print(f"ERROR: File not found: {json_path}")
+    if not config_path.exists():
+        print(f"ERROR: File not found: {config_path}")
         sys.exit(1)
 
-    with open(json_path, encoding="utf-8") as f:
+    with open(config_path, encoding="utf-8") as f:
         config = json.load(f)
 
-    project_name = config.get("project", json_path.parent.name)
+    project_name = config.get("project", config_path.parent.name)
     model = config.get("model", DEFAULT_MODEL)
     resolution = config.get("resolution", DEFAULT_RESOLUTION)
     scenes = config.get("scenes", [])
@@ -246,7 +274,7 @@ def minimax_client(json_path: str, poll_interval: int = DEFAULT_POLL_INTERVAL,
         print("ERROR: No scenes in config")
         sys.exit(1)
 
-    project_dir = json_path.parent
+    project_dir = config_path.parent
     clips_dir = project_dir / "clips"
     api_key = load_api_key(project_dir)
 
@@ -262,7 +290,7 @@ def minimax_client(json_path: str, poll_interval: int = DEFAULT_POLL_INTERVAL,
     print(f"  Output:     {clips_dir}")
     print(f"  Poll:       {poll_interval}s x {max_attempts} attempts")
     if dry_run:
-        print(f"  DRY RUN -- no API calls")
+        print("  DRY RUN -- no API calls")
     print(sep)
 
     if dry_run:
@@ -271,10 +299,14 @@ def minimax_client(json_path: str, poll_interval: int = DEFAULT_POLL_INTERVAL,
             sid = scene.get("id", "???")
             prompt = scene.get("prompt", "")
             duration = scene.get("duration", DEFAULT_DURATION)
-            print(f"  [{sid}] dur={duration}s prompt={len(prompt)} chars "
-                  f"-> {clips_dir / f'{sid}.mp4'}")
-        print(f"\n  OK - {len(scenes)} scenes would be generated. "
-              f"Remove --dry-run to proceed.")
+            print(
+                f"  [{sid}] dur={duration}s prompt={len(prompt)} chars "
+                f"-> {clips_dir / f'{sid}.mp4'}"
+            )
+        print(
+            f"\n  OK - {len(scenes)} scenes would be generated. "
+            f"Remove --dry-run to proceed."
+        )
         return
 
     if not api_key:
@@ -289,19 +321,25 @@ def minimax_client(json_path: str, poll_interval: int = DEFAULT_POLL_INTERVAL,
         print(f"\n-- Scene {i + 1}/{len(scenes)}: {scene['id']} --")
         try:
             scene = process_scene(
-                api_key, scene, clips_dir, model, resolution,
-                poll_interval, max_attempts, resume
+                api_key,
+                scene,
+                clips_dir,
+                model,
+                resolution,
+                poll_interval,
+                max_attempts,
+                resume,
             )
         except KeyboardInterrupt:
-            print(f"\n  Interrupted. Saving progress...")
+            print("\n  Interrupted. Saving progress...")
             break
 
     # -- Save updated state --
     config["scenes"] = scenes
     config["_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    with open(json_path, "w", encoding="utf-8") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
-    print(f"\n  State saved to {json_path}")
+    print(f"\n  State saved to {config_path}")
 
     elapsed = time.time() - t_start
     completed = sum(1 for s in scenes if s.get("status") == "Success")
@@ -315,14 +353,26 @@ def main():
         description="MiniMax Video Generation - YouTube Pipeline"
     )
     parser.add_argument("json_config", help="Path to minimax.json project config")
-    parser.add_argument("--poll", type=int, default=DEFAULT_POLL_INTERVAL,
-                        help=f"Polling interval in seconds (default {DEFAULT_POLL_INTERVAL})")
-    parser.add_argument("--max-attempts", type=int, default=DEFAULT_MAX_ATTEMPTS,
-                        help=f"Max polling attempts (default {DEFAULT_MAX_ATTEMPTS})")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Validate JSON without calling API")
-    parser.add_argument("--no-resume", action="store_true",
-                        help="Don't skip completed scenes (re-run all)")
+    parser.add_argument(
+        "--poll",
+        type=int,
+        default=DEFAULT_POLL_INTERVAL,
+        help=f"Polling interval in seconds (default {DEFAULT_POLL_INTERVAL})",
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=DEFAULT_MAX_ATTEMPTS,
+        help=f"Max polling attempts (default {DEFAULT_MAX_ATTEMPTS})",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Validate JSON without calling API"
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Don't skip completed scenes (re-run all)",
+    )
     args = parser.parse_args()
 
     minimax_client(

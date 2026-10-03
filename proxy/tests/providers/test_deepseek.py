@@ -1,6 +1,6 @@
 """Tests for DeepSeek OpenAI-compatible chat completions provider."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -150,9 +150,7 @@ def test_build_request_body_tool_result_normalized_to_string(deepseek_provider):
                         {
                             "type": "tool_result",
                             "tool_use_id": "t1",
-                            "content": [
-                                {"type": "text", "text": "file content here"}
-                            ],
+                            "content": [{"type": "text", "text": "file content here"}],
                         }
                     ],
                 },
@@ -187,6 +185,8 @@ async def test_stream_uses_chat_completions_path(deepseek_provider):
     with patch.object(
         deepseek_provider._client.chat.completions, "create", side_effect=fake_create
     ):
-        _ = [x async for x in deepseek_provider.stream_response(request, request_id="r1")]
+        _ = [
+            x async for x in deepseek_provider.stream_response(request, request_id="r1")
+        ]
 
     assert called["stream"] == "True"

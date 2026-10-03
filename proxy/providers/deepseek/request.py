@@ -14,9 +14,7 @@ def _move_system_to_user(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
     if not messages:
         return messages
 
-    system_indices = [
-        i for i, m in enumerate(messages) if m.get("role") == "system"
-    ]
+    system_indices = [i for i, m in enumerate(messages) if m.get("role") == "system"]
     if not system_indices:
         return messages
 
@@ -38,7 +36,9 @@ def _move_system_to_user(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
         messages.pop(i)
 
     if not system_texts:
-        logger.debug("DEEPSEEK_MOVE_SYSTEM: no system text to move, stripped empty system msgs")
+        logger.debug(
+            "DEEPSEEK_MOVE_SYSTEM: no system text to move, stripped empty system msgs"
+        )
         return messages
 
     system_block = "\n\n".join(system_texts)
