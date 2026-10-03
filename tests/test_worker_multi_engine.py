@@ -356,6 +356,97 @@ def test_main_linux_config_is_multi_engine_without_secrets():
         assert len(value) < 80
 
 
+def test_worker_from_file_reads_strict_token_file(tmp_path):
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("file-token-canary\n", encoding="utf-8")
+    token_file.chmod(0o600)
+    config_file = tmp_path / "worker.json"
+    config_file.write_text(
+        json.dumps({
+            "controller_url": "http://127.0.0.1:9",
+            "token_file": "worker.token",
+            "state_file": str(tmp_path / "state.json"),
+            "worker": WORKER,
+        }),
+        encoding="utf-8",
+    )
+
+    daemon = WorkerDaemon.from_file(config_file, Recorder())
+
+    assert daemon.client.token == "file-token-canary"
+    assert "token_file" not in daemon.config
+    assert "token_env" not in daemon.config
+
+
+def test_worker_from_file_rejects_ambiguous_token_sources(tmp_path, monkeypatch):
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("file-token-canary\n", encoding="utf-8")
+    token_file.chmod(0o600)
+    monkeypatch.setenv("HERMES_TEST_TOKEN", "env-token-canary")
+    config_file = tmp_path / "worker.json"
+    config_file.write_text(
+        json.dumps({
+            "controller_url": "http://127.0.0.1:9",
+            "token_env": "HERMES_TEST_TOKEN",
+            "token_file": str(token_file),
+            "worker": WORKER,
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="exactly one"):
+        WorkerDaemon.from_file(config_file, Recorder())
+
+
+def test_worker_from_file_rejects_token_file_symlink(tmp_path):
+    target = tmp_path / "real.token"
+    target.write_text("file-token-canary\n", encoding="utf-8")
+    target.chmod(0o600)
+    link = tmp_path / "worker.token"
+    link.symlink_to(target)
+    config_file = tmp_path / "worker.json"
+    config_file.write_text(
+        json.dumps({
+            "controller_url": "http://127.0.0.1:9",
+            "token_file": "worker.token",
+            "worker": WORKER,
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="symlink"):
+        WorkerDaemon.from_file(config_file, Recorder())
+
+
+def test_worker_from_file_rejects_insecure_token_file_permissions(tmp_path):
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("file-token-canary\n", encoding="utf-8")
+    token_file.chmod(0o644)
+    config_file = tmp_path / "worker.json"
+    config_file.write_text(
+        json.dumps({
+            "controller_url": "http://127.0.0.1:9",
+            "token_file": str(token_file),
+            "worker": WORKER,
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="permissions"):
+        WorkerDaemon.from_file(config_file, Recorder())
+
+
+def test_runtime_schema_requires_exactly_one_worker_credential_source():
+    schema = json.loads(RUNTIME_SCHEMA.read_text(encoding="utf-8"))
+
+    assert schema["properties"]["token_file"] == {"type": "string", "minLength": 1}
+    required_sets = {
+        tuple(item["required"])
+        for item in schema["oneOf"]
+    }
+    assert required_sets == {("token_env",), ("token_file",)}
+
+
 def test_main_linux_config_builds_all_engines_with_fake_environment(engine_env):
     daemon_from_file = WorkerDaemon.from_file(MAIN_LINUX)
     router = daemon_from_file.adapter

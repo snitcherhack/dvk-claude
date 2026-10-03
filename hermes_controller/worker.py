@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import json
 import os
+import stat
 import threading
 import time
 from dataclasses import replace
@@ -87,12 +88,57 @@ class WorkerDaemon:
 
     @classmethod
     def from_file(cls, path: str | Path, adapter: ExecutionAdapter | None = None) -> "WorkerDaemon":
-        config = json.loads(Path(path).read_text(encoding="utf-8"))
+        config_path = Path(path)
+        config = json.loads(config_path.read_text(encoding="utf-8"))
         token_env = config.pop("token_env", None)
+        token_file = config.pop("token_file", None)
+        if bool(token_env) == bool(token_file):
+            raise ValueError("worker config requires exactly one of token_env or token_file")
         if token_env:
-            import os
-            config["token"] = os.environ[token_env]
+            try:
+                config["token"] = os.environ[token_env]
+            except KeyError as exc:
+                raise ValueError(f"worker token environment variable is not set: {token_env}") from exc
+        else:
+            config["token"] = cls._read_token_file(config_path, token_file)
         return cls(config, adapter)
+
+    @staticmethod
+    def _read_token_file(config_path: Path, value: Any) -> str:
+        if not isinstance(value, str) or not value:
+            raise ValueError("token_file must be a non-empty path")
+        token_path = Path(value).expanduser()
+        if not token_path.is_absolute():
+            token_path = config_path.parent / token_path
+        token_path = Path(os.path.abspath(token_path))
+        if token_path.is_symlink():
+            raise ValueError("token_file must not be a symlink")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(token_path, flags)
+        except OSError as exc:
+            raise ValueError(f"could not open token_file: {token_path}") from exc
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("token_file must be a regular file")
+            if os.name == "posix":
+                if info.st_mode & 0o077:
+                    raise ValueError("token_file permissions must not grant group or other access")
+                if info.st_uid != os.getuid():
+                    raise ValueError("token_file must be owned by the worker user")
+            if info.st_size > 8192:
+                raise ValueError("token_file is unexpectedly large")
+            with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                fd = -1
+                raw = stream.read()
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        token = raw.strip()
+        if not token or "\n" in token or "\r" in token:
+            raise ValueError("token_file must contain exactly one non-empty credential")
+        return token
 
     @classmethod
     def _adapter_from_worker_config(cls, config: dict[str, Any]) -> ExecutionAdapter:
