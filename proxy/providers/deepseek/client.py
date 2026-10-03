@@ -51,10 +51,13 @@ class DeepSeekProvider(OpenAIChatTransport):
                 continue
             content = m.get("content")
             if isinstance(content, list):
-                m = {**m, "content": "\n\n".join(
-                    p.get("text", "") if isinstance(p, dict) else str(p)
-                    for p in content
-                )}
+                m = {
+                    **m,
+                    "content": "\n\n".join(
+                        p.get("text", "") if isinstance(p, dict) else str(p)
+                        for p in content
+                    ),
+                }
             cleaned.append(m)
         body["messages"] = cleaned
         return body

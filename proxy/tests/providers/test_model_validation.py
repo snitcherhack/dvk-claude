@@ -87,20 +87,17 @@ async def test_native_openai_compatible_provider_lists_model_ids() -> None:
 
 
 @pytest.mark.asyncio
-async def test_deepseek_lists_models_from_root_endpoint() -> None:
+async def test_deepseek_lists_models_via_openai_client() -> None:
     provider = DeepSeekProvider(ProviderConfig(api_key="deepseek-key"))
     with patch.object(
-        provider._client,
-        "get",
+        provider._client.models,
+        "list",
         new_callable=AsyncMock,
-        return_value=_response(200, {"data": [{"id": "deepseek-chat"}]}),
-    ) as mock_get:
+        return_value=SimpleNamespace(data=[SimpleNamespace(id="deepseek-chat")]),
+    ) as mock_list:
         assert await provider.list_model_ids() == frozenset({"deepseek-chat"})
 
-    mock_get.assert_awaited_once_with(
-        "https://api.deepseek.com/models",
-        headers={"Authorization": "Bearer deepseek-key"},
-    )
+    mock_list.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
