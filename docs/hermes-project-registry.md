@@ -251,6 +251,36 @@ If the latest terminal attempt contains malformed historical result data,
 status preserves the job/run summary but returns the empty result surface
 instead of failing the request or promoting an older terminal attempt.
 
+### Minimum verifiable result for Git tasks
+
+For repository-backed tasks, a terminal worker result must expose enough
+information through the normalized `result`, `evidence`, `artifacts` and
+`hashes` surfaces for the Director to verify the task without interactive access
+to the worker filesystem.
+
+When applicable, that evidence must include:
+
+- Git branch;
+- HEAD commit;
+- working-tree state;
+- summarized `diff --stat`;
+- tests and validations executed, including their outcome;
+- persisted evidence paths;
+- local commit created by the task, if any;
+- terminal status and pending human gate, if any.
+
+These facts do not need to be first-class top-level JSON fields until the schema
+is extended for them; they must nevertheless be transported in the normalized
+result/evidence contract in a bounded, non-secret form. A path that is valid only
+inside the worker is not, by itself, sufficient verification if the Director has
+no supported way to consume the referenced evidence.
+
+The Director should not routinely compensate for missing result evidence by
+probing SSH, Tailscale, worker credentials or ad-hoc remote filesystem access.
+If the Controller cannot transport enough evidence for ordinary verification,
+that is a concrete Hermes contract deficiency to fix rather than a reason to
+invent a side channel.
+
 ## Human-gate contract
 
 `WAIT_USER` is fail-closed. A worker may return it only with a gate explicitly
