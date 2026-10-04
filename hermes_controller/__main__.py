@@ -58,6 +58,8 @@ def _add_instruction_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--engine", choices=("auto", "codex", "claude", "hybrid", "native", "brainstorm"))
     parser.add_argument("--idempotency-key")
     parser.add_argument("--workspace", action="append", default=[])
+    parser.add_argument("--integration", action="append", default=[])
+    parser.add_argument("--integration-request", type=json.loads, help='JSON {"verb", "params"}')
     parser.add_argument("--candidates", type=int, help="brainstorm proposals per engine (2..6, default 3)")
     parser.add_argument("--rubric-file", help="brainstorm rubric: JSON list of {id, label, description, weight}")
 
@@ -201,6 +203,8 @@ def main() -> None:
                 engine=args.engine,
                 idempotency_key=args.idempotency_key,
                 workspaces=args.workspace,
+                integrations=args.integration,
+                integration_request=args.integration_request,
                 brainstorm_candidates=args.candidates,
                 brainstorm_rubric=_read(args.rubric_file) if args.rubric_file else None,
             )

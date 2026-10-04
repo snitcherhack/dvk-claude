@@ -15,6 +15,7 @@ from typing import Any
 
 from .artifacts import validate_artifacts
 from .brainstorm_contract import build_brainstorm_config, validate_brainstorm_config
+from .github_api import KNOWN_INTEGRATIONS, validate_github_api_request
 from .clock import MonotonicClock
 from .engine_policy import EXPLICIT_ONLY_ENGINES, select_engine
 
@@ -202,6 +203,8 @@ class Controller:
         engine: str | None = None,
         idempotency_key: str | None = None,
         workspaces: list[str] | None = None,
+        integrations: list[str] | None = None,
+        integration_request: dict[str, Any] | None = None,
         brainstorm_candidates: int | None = None,
         brainstorm_rubric: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -246,6 +249,14 @@ class Controller:
         elif brainstorm_options:
             raise ControllerError("brainstorm options require --engine brainstorm")
 
+        requested_integrations = [] if integrations is None else integrations
+        self._validate_integrations(requested_integrations)
+        for integration in requested_integrations:
+            if integration not in manifest.get("allowed_integrations", []):
+                raise ControllerError(f"integration is not allowed for project: {integration}")
+        if integration_request is not None and not requested_integrations:
+            raise ControllerError("integration_request requires an integration")
+
         requested_workspaces = list(dict.fromkeys(workspaces or []))
         declared_workspaces = manifest.get("workspaces", {})
         selected_workspaces: dict[str, str] = {}
@@ -259,6 +270,7 @@ class Controller:
         run_output_dir = f"{runtime_directory}/{job_id}"
         capabilities = set(manifest.get("capabilities", []))
         capabilities.update(ENGINE_CAPABILITIES[selected_engine])
+        capabilities.update(requested_integrations)
 
         task: dict[str, Any] = {
             "job_id": job_id,
@@ -290,6 +302,9 @@ class Controller:
             "selected_workspaces": selected_workspaces,
             "project_manifest_version": 1,
         }
+        if requested_integrations:
+            task["integrations"] = list(requested_integrations)
+            task["integration_request"] = integration_request
         if manifest.get("worker_id"):
             task["worker_id"] = manifest["worker_id"]
         if manifest.get("timeout_seconds") is not None:
@@ -730,6 +745,10 @@ class Controller:
         capabilities = manifest["capabilities"]
         if not isinstance(capabilities, list) or any(not isinstance(item, str) or not item for item in capabilities):
             raise ControllerError("invalid project capabilities")
+        if KNOWN_INTEGRATIONS.intersection(capabilities):
+            raise ControllerError("project capabilities cannot grant integrations; use allowed_integrations")
+        if "allowed_integrations" in manifest:
+            Controller._validate_integrations(manifest["allowed_integrations"])
         if manifest.get("worker_id") is not None and (
             not isinstance(manifest["worker_id"], str) or not manifest["worker_id"]
         ):
@@ -804,7 +823,29 @@ class Controller:
             capabilities = task.get("required_capabilities")
             if not isinstance(capabilities, list) or not ENGINE_CAPABILITIES[engine].issubset(capabilities):
                 raise ControllerError("execution_engine capabilities are missing")
+        integrations = task.get("integrations", [])
+        Controller._validate_integrations(integrations)
+        if "github_api" in integrations:
+            try:
+                validate_github_api_request(task.get("integration_request"))
+            except ValueError as exc:
+                raise ControllerError(str(exc)) from exc
+            if "github_api" not in capabilities:
+                raise ControllerError("github_api integration capability is missing")
+        elif "integration_request" in task:
+            raise ControllerError("integration_request requires github_api integration")
+        if "github_api" in capabilities and "github_api" not in integrations:
+            raise ControllerError("github_api capability requires explicit integration opt-in")
         Controller._validate_brainstorm_task(task)
+
+    @staticmethod
+    def _validate_integrations(integrations: Any) -> None:
+        if (
+            not isinstance(integrations, list)
+            or any(not isinstance(item, str) or item not in KNOWN_INTEGRATIONS for item in integrations)
+            or len(set(integrations)) != len(integrations)
+        ):
+            raise ControllerError("invalid integrations: expected unique known integration names")
 
     @staticmethod
     def _validate_brainstorm_task(task: dict[str, Any]) -> None:
