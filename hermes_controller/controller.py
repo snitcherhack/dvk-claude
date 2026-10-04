@@ -432,6 +432,8 @@ class Controller:
         task = json.loads(job["task_json"])
         expected_engine = self._task_engine(task)
         actual_engine = envelope.get("engine")
+        if "codex_result" in envelope and expected_engine in KNOWN_INTEGRATIONS:
+            raise ControllerError("legacy codex_result cannot report an integration")
         if actual_engine is None and "codex_result" in envelope:
             actual_engine = expected_engine
         if actual_engine != expected_engine:
@@ -683,6 +685,9 @@ class Controller:
 
     @staticmethod
     def _task_engine(task: dict[str, Any]) -> str:
+        # Result executor label; integrations are not selectable engines.
+        if "github_api" in task.get("integrations", []):
+            return "github_api"
         explicit = task.get("execution_engine")
         if explicit:
             return explicit
@@ -887,7 +892,7 @@ class Controller:
         if has_engine_result == has_legacy_result:
             raise ControllerError("result envelope must contain exactly one result payload")
         if has_engine_result:
-            if envelope.get("engine") not in ENGINE_CAPABILITIES:
+            if envelope.get("engine") not in {*ENGINE_CAPABILITIES, *KNOWN_INTEGRATIONS}:
                 raise ControllerError("invalid result engine")
         elif envelope.get("engine") not in {None, "codex"}:
             raise ControllerError("legacy codex_result cannot use another engine")

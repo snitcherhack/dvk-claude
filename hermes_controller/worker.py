@@ -19,6 +19,7 @@ from .adapters import AdapterResult, ClaudeAgentAdapter, CodexRunAdapter, CxhRun
 from .artifacts import validate_artifacts
 from .brainstorm import BrainstormAdapter
 from .engine_policy import EXPLICIT_ONLY_ENGINES
+from .github_api import GitHubApiClient, GitHubApiHandler
 
 KNOWN_ENGINES = frozenset({"codex", "claude", "hybrid", "native", "brainstorm"})
 COMPOSED_KINDS = frozenset({"hybrid", "brainstorm"})
@@ -70,7 +71,19 @@ class HTTPControllerClient:
 class WorkerDaemon:
     def __init__(self, config: dict[str, Any], adapter: ExecutionAdapter | None = None) -> None:
         self.config = config
-        self.worker = config["worker"]
+        self.worker = {**config["worker"], "capabilities": list(config["worker"].get("capabilities", []))}
+        self.integrations = {}
+        integrations = config.get("integrations", {})
+        if not isinstance(integrations, dict) or set(integrations) - {"github_api"}:
+            raise ValueError("unknown worker integrations")
+        if "github_api" in integrations:
+            spec = integrations["github_api"]
+            if (not isinstance(spec, dict) or set(spec) != {"token_env"}
+                    or not isinstance(spec["token_env"], str) or not spec["token_env"].strip()):
+                raise ValueError("github_api requires a token_env name")
+            self.integrations["github_api"] = GitHubApiHandler(GitHubApiClient(os.environ.get(spec["token_env"])))
+            if "github_api" not in self.worker["capabilities"]:
+                self.worker["capabilities"].append("github_api")
         self.client = HTTPControllerClient(config["controller_url"], self.worker["worker_id"], config["token"])
         self.adapter = adapter or self._adapter_from_worker_config(config)
         self.heartbeat_interval_s = config.get("heartbeat_interval_ms", 30_000) / 1000
@@ -467,8 +480,16 @@ class WorkerDaemon:
         result_box: list[Any] = []
         def execute_claim() -> None:
             try:
-                prepared_task = self._prepare_task(claim)
-                result_box.append(self.adapter.execute(prepared_task))
+                task = claim["task"]
+                if "github_api" in task.get("integrations", []):
+                    handler = self.integrations.get("github_api")
+                    result_box.append(
+                        handler.execute(task.get("integration_request")) if handler else
+                        AdapterResult(status="BLOCKED", summary="github_api: integration is not configured")
+                    )
+                else:
+                    prepared_task = self._prepare_task(claim)
+                    result_box.append(self.adapter.execute(prepared_task))
             except ValueError as exc:
                 result_box.append(AdapterResult(status="BLOCKED", summary=f"worker task preparation blocked: {exc}"))
             except OSError as exc:
@@ -497,7 +518,7 @@ class WorkerDaemon:
             raise RuntimeError("adapter did not return a result")
         result = self._normalize_artifacts(self._normalize_gate_result(result_box[0], claim["task"]))
         now = time.time_ns() // 1_000_000
-        envelope = {**{key: claim[key] for key in ("job_id", "run_id", "attempt", "lease_id", "lease_token")}, "worker_id": self.worker["worker_id"], "started_at": now, "finished_at": now, "engine": self._execution_engine_for_task(claim["task"]), "engine_result": result.result(), "artifacts": list(result.artifacts or []), "hashes": dict(result.hashes or {})}
+        envelope = {**{key: claim[key] for key in ("job_id", "run_id", "attempt", "lease_id", "lease_token")}, "worker_id": self.worker["worker_id"], "started_at": now, "finished_at": now, "engine": ("github_api" if "github_api" in claim["task"].get("integrations", []) else self._execution_engine_for_task(claim["task"])), "engine_result": result.result(), "artifacts": list(result.artifacts or []), "hashes": dict(result.hashes or {})}
         self.pending_envelope = envelope; self._save_state(claim, envelope)
         try:
             self.client.ingest(envelope)

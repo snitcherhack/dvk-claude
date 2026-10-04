@@ -4,6 +4,7 @@
   "state_file": "runtime/main-linux-state.json",
   "task_materialization_roots_env": "HERMES_TASK_ROOTS",
   "default_execution_engine": "codex",
+  "integrations": {"github_api": {"token_env": "HERMES_GITHUB_TOKEN"}},
   "adapters": {
     "codex": {
       "kind": "codex-run",
@@ -36,7 +37,7 @@
     "worker_id": "main-linux",
     "platform": "linux",
     "environment": "Ubuntu 24.04 WSL2",
-    "capabilities": ["codex", "claude", "git", "python", "tests", "image_qa", "network"],
+    "capabilities": ["codex", "claude", "git", "python", "tests", "image_qa", "network", "github_api"],
     "max_concurrent_jobs": 1
   }
 }
