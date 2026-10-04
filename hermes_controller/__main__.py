@@ -12,6 +12,35 @@ from .controller import Controller
 from .worker import WorkerDaemon
 
 
+def render_status(status_dict: dict, compact: bool = False, fields: list[str] | None = None) -> str:
+    """Render normalized Controller status; field selection takes precedence."""
+    def lookup(path: str):
+        value = status_dict
+        for key in path.split("."):
+            if not isinstance(value, dict):
+                return None
+            value = value.get(key)
+        return value
+
+    if fields is not None:
+        return json.dumps({field: lookup(field) for field in fields}, sort_keys=True)
+    if compact:
+        values = (
+            ("state", "state", "-"),
+            ("attempt", "attempt", "-"),
+            ("result", "result.status", "-"),
+            ("summary", "result.summary", "-"),
+            ("gate", "gate.waiting_for", "none"),
+        )
+        parts = []
+        for label, path, fallback in values:
+            value = lookup(path)
+            text = fallback if value is None else " ".join(str(value).splitlines())
+            parts.append(f"{label}={text}")
+        return " ".join(parts)
+    return json.dumps(status_dict, sort_keys=True)
+
+
 def _read(path: str) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -50,7 +79,10 @@ def main() -> None:
     commands.add_parser("heartbeat-worker").add_argument("worker_id")
     commands.add_parser("worker-status").add_argument("worker_id")
     commands.add_parser("reconcile-leases")
-    commands.add_parser("status").add_argument("job_id")
+    status = commands.add_parser("status")
+    status.add_argument("job_id")
+    status.add_argument("--compact", action="store_true", help="render status as one plain-text line")
+    status.add_argument("--fields", help="comma-separated dot-paths to select as JSON (overrides --compact)")
 
     gate = commands.add_parser("gate")
     gate_sub = gate.add_subparsers(dest="gate_command", required=True)
@@ -210,6 +242,9 @@ def main() -> None:
             out = controller.reconcile_expired_leases()
         else:
             out = controller.status(args.job_id)
+            fields = [field.strip() for field in args.fields.split(",")] if args.fields is not None else None
+            print(render_status(out, compact=args.compact, fields=fields))
+            return
         print(json.dumps(out, sort_keys=True))
     finally:
         controller.close()
