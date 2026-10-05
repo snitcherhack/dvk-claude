@@ -13,6 +13,48 @@ GITHUB_API_VERBS = frozenset({
 })
 
 
+EVIDENCE_ITEMS_LIMIT = 25
+
+
+def _summarize_pull(data):
+    return {
+        **{key: data.get(key) for key in ("number", "state", "draft", "html_url")},
+        "head": {key: data.get("head", {}).get(key) for key in ("ref", "sha")},
+        "base": {"ref": data.get("base", {}).get("ref")},
+    }
+
+
+def _summarize_pr_list(data):
+    pulls = data.get("pull_requests", [])
+    # REST pulls supplies no total across pages: count all available rows in
+    # this response, before evidence truncation. Explicit page/per_page remain
+    # available for future queries; full REST responses are not transported.
+    return {"count": len(pulls), "pulls": [
+        {"number": row.get("number"), "url": row.get("html_url"),
+         "state": row.get("state"), "head_ref": row.get("head", {}).get("ref"),
+         "base_ref": row.get("base", {}).get("ref")}
+        for row in pulls[:EVIDENCE_ITEMS_LIMIT]
+    ]}
+
+
+def _summarize_actions_status(data):
+    runs = data.get("workflow_runs", [])
+    return {"total_count": data.get("total_count", len(runs)), "runs": [
+        {key: row.get(key) for key in (
+            "id", "name", "head_sha", "status", "conclusion", "html_url", "created_at", "updated_at")}
+        for row in runs[:EVIDENCE_ITEMS_LIMIT]
+    ]}
+
+
+def _summarize_checks_status(data):
+    checks = data.get("check_runs", [])
+    return {"total_count": data.get("total_count", len(checks)), "checks": [
+        {key: row.get(key) for key in (
+            "name", "status", "conclusion", "details_url", "started_at", "completed_at")}
+        for row in checks[:EVIDENCE_ITEMS_LIMIT]
+    ]}
+
+
 def validate_github_api_request(request) -> None:
     if not isinstance(request, dict):
         raise ValueError("github_api integration_request must be a dict")
@@ -224,7 +266,15 @@ class GitHubApiHandler:
                 raise RuntimeError("invalid client result")
             if isinstance(self.client, GitHubApiClient):
                 data = self.client.redact(data)
-            evidence = json.dumps({"verb": verb, "result": data}, sort_keys=True)
+            if verb in ("pr_create", "pr_get"):
+                summary = {"pull": _summarize_pull(data)}
+            else:
+                summary = {
+                    "pr_list": _summarize_pr_list,
+                    "actions_status": _summarize_actions_status,
+                    "checks_status": _summarize_checks_status,
+                }[verb](data)
+            evidence = json.dumps({"verb": verb, **summary}, sort_keys=True)
         except (ValueError, TypeError):
             return AdapterResult(status="BLOCKED", summary="github_api: invalid request or missing configuration")
         except Exception:

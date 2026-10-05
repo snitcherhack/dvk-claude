@@ -24,7 +24,7 @@ def test_dispatch(verb):
     result = execute(client, {"verb": verb, "params": {}})
     assert result.status == "DONE"
     assert client.calls == [(verb, {"owner": "o", "repo": "r"})]
-    assert json.loads(result.evidence[0]) == {"verb": verb, "result": {"number": 42, "html_url": "https://github.com/o/r/pull/42", "status": "completed"}}
+    assert json.loads(result.evidence[0])["verb"] == verb
     assert result.completed
 
 
@@ -73,7 +73,7 @@ def test_http_contract(verb, params, method, suffix, payload):
     assert calls[0].method == method
     if method == "POST":
         assert json.loads(calls[0].data) == params
-    assert isinstance(json.loads(result.evidence[0])["result"], dict)
+    assert json.loads(result.evidence[0])["verb"] == verb
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -141,9 +141,9 @@ def test_create_reconciliation(existing, post_fails, status, posts):
     if status == "BLOCKED":
         assert "manual reconcile required" in result.summary
     else:
-        data = json.loads(result.evidence[0])["result"]
+        data = json.loads(result.evidence[0])["pull"]
         assert data["number"] == 42
-        assert data.get("reconciled", False) == bool(existing or post_fails)
+        assert "reconciled" not in data
     assert "fake-secret" not in json.dumps(result.result())
 
 
@@ -176,3 +176,54 @@ def test_uncertain_creation_never_retries_post(mode):
     assert "manual reconcile required" in result.summary
     assert calls.count("POST") == (1 if mode == "post_error" else 0)
     assert "fake-secret" not in json.dumps(result.result())
+
+
+@pytest.mark.parametrize("verb", sorted(GITHUB_API_VERBS))
+def test_evidence_is_bounded_exact_deterministic_and_secret_free(verb):
+    from hermes_controller import github_api
+
+    token = "fake-evidence-secret"
+    extra = {"body": "large" * 10000, "diff_url": "unused", "user": {"login": "unused"},
+             "labels": list(range(1000)), "extra": list(range(1000)),
+             "headers": {"Authorization": token}, "token": token}
+    pull = {**pr(), "draft": False, **extra,
+            "head": {"ref": "feature", "sha": "abc", "label": "o:feature", **extra},
+            "base": {"ref": "main", **extra}}
+    run = {key: key + "-value" for key in (
+        "id", "name", "head_sha", "status", "conclusion", "html_url", "created_at", "updated_at")}
+    check = {key: key + "-value" for key in (
+        "name", "status", "conclusion", "details_url", "started_at", "completed_at")}
+    payload = {"pr_get": pull, "pr_create": pull, "pr_list": [pull] * 100,
+               "actions_status": {"total_count": 100, "workflow_runs": [{**run, **extra}] * 100, **extra},
+               "checks_status": {"total_count": 100, "check_runs": [{**check, **extra}] * 100, **extra}}[verb]
+
+    def opener(request, timeout):
+        if verb == "pr_create" and request.method == "GET":
+            return Response([])
+        return Response(payload)
+
+    params = {"pr_get": {"number": 42}, "pr_create": {"title": "Title", "head": "feature", "base": "main"},
+              "pr_list": {}, "actions_status": {"ref": "abc"}, "checks_status": {"ref": "abc"}}[verb]
+    client = GitHubApiClient(token, opener=opener)
+    results = [execute(client, {"verb": verb, "params": params}) for _ in range(2)]
+    assert all(result.status == "DONE" for result in results)
+    data = json.loads(results[0].evidence[0])
+    assert data == json.loads(results[1].evidence[0])
+    serialized = json.dumps(results[0].evidence)
+    for forbidden in (token, "Authorization", "headers", "diff_url", "labels", "large", "extra"):
+        assert forbidden not in serialized
+    if verb in ("pr_get", "pr_create"):
+        assert data == {"verb": verb, "pull": {
+            "number": 42, "state": "open", "draft": False,
+            "html_url": pull["html_url"], "head": {"ref": "feature", "sha": "abc"},
+            "base": {"ref": "main"}}}
+    else:
+        key, count_key, expected = {
+            "pr_list": ("pulls", "count", {"number": 42, "url": pull["html_url"],
+                                         "state": "open", "head_ref": "feature", "base_ref": "main"}),
+            "actions_status": ("runs", "total_count", run),
+            "checks_status": ("checks", "total_count", check),
+        }[verb]
+        assert set(data) == {"verb", key, count_key}
+        assert data[count_key] == 100
+        assert data[key] == [expected] * github_api.EVIDENCE_ITEMS_LIMIT
