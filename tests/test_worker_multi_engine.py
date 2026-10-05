@@ -334,8 +334,8 @@ def test_main_linux_config_is_multi_engine_without_secrets():
     assert set(config["adapters"]) == {"codex", "claude", "hybrid", "brainstorm"}
     for spec in config["adapters"].values():
         assert set(spec) <= set(schema["$defs"]["adapter"]["properties"])
-    assert config["integrations"] == {"github_api": {"token_env": "HERMES_GITHUB_TOKEN"}}
-    assert "github_api" in config["worker"]["capabilities"]
+    assert "integrations" not in config
+    assert "github_api" not in config["worker"]["capabilities"]
     assert config["default_execution_engine"] == "codex"
     assert config["adapters"]["brainstorm"] == {"kind": "brainstorm", "claude_engine": "claude", "codex_engine": "codex"}
     assert config["adapters"]["hybrid"] == {"kind": "hybrid", "primary_engine": "claude", "review_engine": "codex",
@@ -464,7 +464,7 @@ def test_main_linux_config_builds_all_engines_with_fake_environment(engine_env):
 @pytest.mark.parametrize("configured", [False, True])
 def test_github_integration_routing(api, monkeypatch, configured):
     controller, url, root = api
-    monkeypatch.delenv("HERMES_TEST_GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_TEST_GITHUB_TOKEN", "fake-canary")
     engine = Recorder()
     config = {"controller_url": url, "token": "worker-secret-token", "state_file": str(root / "state.json"),
               "worker": copy.deepcopy(WORKER)}
@@ -478,12 +478,14 @@ def test_github_integration_routing(api, monkeypatch, configured):
     else:
         worker.worker["capabilities"].append("github_api")
     worker.register()
-    request = {"verb": "pr_get", "params": {"owner": "o", "repo": "r", "number": 1}}
-    job_id = controller.enqueue(legacy_task(integrations=["github_api"], integration_request=request,
-                                            required_capabilities=["codex", "github_api"]))
+    request = {"verb": "pr_get", "params": {"number": 1}}
+    task = legacy_task(repository="https://github.com/o/r", integrations=["github_api"], integration_request=request,
+                       required_capabilities=["github_api"])
+    register_github_project(controller, root)
+    job_id = controller.enqueue(task)
     assert worker.once()
     assert engine.tasks == []
-    assert handler.tasks == ([request] if configured else [])
+    assert handler.tasks == ([task] if configured else [])
     envelope = stored_envelope(controller, job_id)
     assert envelope["engine"] == "github_api"
     assert envelope["engine_result"]["status"] == ("DONE" if configured else "BLOCKED")
@@ -512,8 +514,10 @@ def test_result_executor_must_match_integration_opt_in(tmp_path, integration, re
     descriptor = copy.deepcopy(WORKER)
     descriptor["capabilities"].append("github_api")
     controller.register_worker(descriptor)
-    extra = {"integrations": ["github_api"], "integration_request": {"verb": "pr_get", "params": {}},
+    extra = {"repository": "https://github.com/o/r", "integrations": ["github_api"], "integration_request": {"verb": "pr_get", "params": {}},
              "required_capabilities": ["codex", "github_api"]} if integration else {}
+    if integration:
+        register_github_project(controller, tmp_path)
     controller.enqueue(legacy_task(**extra))
     claim = controller.claim("main-linux")
     envelope = {key: claim[key] for key in ("job_id", "run_id", "attempt", "lease_id", "lease_token")}
@@ -527,3 +531,78 @@ def test_result_executor_must_match_integration_opt_in(tmp_path, integration, re
             controller.ingest_result(envelope)
     finally:
         controller.close()
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_github_missing_credentials(tmp_path, monkeypatch, configured):
+    monkeypatch.delenv("HERMES_TEST_GITHUB_TOKEN", raising=False)
+    config = {"controller_url": "http://127.0.0.1:9", "token": "worker-fake",
+              "worker": copy.deepcopy(WORKER), "state_file": str(tmp_path / "s.json")}
+    config["worker"]["capabilities"].append("github_api")
+    if configured:
+        config["integrations"] = {"github_api": {"token_env": "HERMES_TEST_GITHUB_TOKEN"}}
+        with pytest.raises(ValueError, match="HERMES_TEST_GITHUB_TOKEN"):
+            WorkerDaemon(config, Recorder())
+    else:
+        worker = WorkerDaemon(config, Recorder())
+        assert "github_api" not in worker.worker["capabilities"]
+        assert not worker.integrations
+
+
+def test_github_is_executor_label_only():
+    from hermes_controller.worker import KNOWN_ENGINES
+    from hermes_controller.controller import ENGINE_CAPABILITIES
+    assert "github_api" not in KNOWN_ENGINES
+    assert "github_api" not in ENGINE_CAPABILITIES
+    for path in (REPO / "hermes_controller" / "schemas").glob("*.json"):
+        schema = json.loads(path.read_text())
+        enum = schema.get("properties", {}).get("execution_engine", {}).get("enum", [])
+        assert "github_api" not in enum
+
+
+def register_github_project(controller, root):
+    from test_project_registry import manifest
+    controller.register_project(manifest(root, project_id="cafe", repository="https://github.com/o/r",
+                                         allowed_integrations=["github_api"]))
+
+
+def test_github_token_absent_from_persistence(api, monkeypatch, caplog):
+    from hermes_controller.github_api import GitHubApiClient
+    from test_github_api_handler import Response
+    import hermes_controller.worker as module
+    controller, url, root = api
+    token = "fake-github-persistence-canary"
+    monkeypatch.setenv("HERMES_TEST_GITHUB_TOKEN", token)
+    calls = []
+    def opener(request, timeout):
+        calls.append(request.full_url)
+        return Response({"number": 1, "title": token})
+    monkeypatch.setattr(module, "GitHubApiClient", lambda value: GitHubApiClient(value, opener=opener))
+    worker = WorkerDaemon({
+        "controller_url": url, "token": "worker-secret-token",
+        "state_file": str(root / "state.json"), "worker": copy.deepcopy(WORKER),
+        "integrations": {"github_api": {"token_env": "HERMES_TEST_GITHUB_TOKEN"}},
+    }, Recorder())
+    register_github_project(controller, root)
+    worker.register()
+    task = legacy_task(repository="https://github.com/o/r", integrations=["github_api"],
+                       integration_request={"verb": "pr_get", "params": {"number": 1}},
+                       required_capabilities=["github_api"])
+    job_id = controller.enqueue(task)
+    states = []
+    save_state = worker._save_state
+    def record_state(*args, **kwargs):
+        save_state(*args, **kwargs)
+        if worker.state_path.exists():
+            states.append(worker.state_path.read_text())
+    monkeypatch.setattr(worker, "_save_state", record_state)
+    assert worker.once()
+    assert calls == ["https://api.github.com/repos/o/r/pulls/1"]
+    assert stored_envelope(controller, job_id)["engine_result"]["status"] == "DONE"
+    assert token not in json.dumps(task)
+    assert token not in json.dumps(controller.status(job_id))
+    assert token not in "\n".join(controller.db.iterdump())
+    assert states
+    assert all(token not in state for state in states)
+    assert not worker.state_path.exists()
+    assert token not in caplog.text

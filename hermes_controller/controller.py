@@ -15,7 +15,12 @@ from typing import Any
 
 from .artifacts import validate_artifacts
 from .brainstorm_contract import build_brainstorm_config, validate_brainstorm_config
-from .github_api import KNOWN_INTEGRATIONS, validate_github_api_request
+from .github_api import (
+    KNOWN_INTEGRATIONS,
+    github_task_repository,
+    parse_github_repository,
+    validate_github_api_request,
+)
 from .clock import MonotonicClock
 from .engine_policy import EXPLICIT_ONLY_ENGINES, select_engine
 
@@ -215,7 +220,12 @@ class Controller:
 
         manifest = self.project(project_id)["manifest"]
         requested_engine = engine or manifest["default_engine"]
-        if requested_engine == "auto":
+        # Integration requests are executed by the handler; no LLM engine runs.
+        integration_only = integrations == ["github_api"]
+        if integration_only:
+            selected_engine = None
+            selection = {"mode": "integration", "executor": "github_api"}
+        elif requested_engine == "auto":
             policy_name = manifest.get("engine_policy", "balanced-v1")
             try:
                 decision = select_engine(instruction, manifest["allowed_engines"], policy=policy_name)
@@ -269,7 +279,8 @@ class Controller:
         runtime_directory = manifest["runtime_directory"].rstrip("/\\")
         run_output_dir = f"{runtime_directory}/{job_id}"
         capabilities = set(manifest.get("capabilities", []))
-        capabilities.update(ENGINE_CAPABILITIES[selected_engine])
+        if selected_engine is not None:
+            capabilities.update(ENGINE_CAPABILITIES[selected_engine])
         capabilities.update(requested_integrations)
 
         task: dict[str, Any] = {
@@ -302,6 +313,13 @@ class Controller:
             "selected_workspaces": selected_workspaces,
             "project_manifest_version": 1,
         }
+        if integration_only:
+            task.pop("execution_engine")
+            try:
+                owner, repo = parse_github_repository(manifest["repository"])
+            except ValueError as exc:
+                raise ControllerError(str(exc)) from exc
+            task["github_repository"] = {"owner": owner, "repo": repo}
         if requested_integrations:
             task["integrations"] = list(requested_integrations)
             task["integration_request"] = integration_request
@@ -328,6 +346,16 @@ class Controller:
 
     def enqueue(self, task: dict[str, Any]) -> str:
         self._validate_task(task)
+        if task.get("integrations") == ["github_api"]:
+            manifest = self.project(task["project"])["manifest"]
+            if "github_api" not in manifest.get("allowed_integrations", []):
+                raise ControllerError("github_api integration is not allowed for project")
+            try:
+                canonical = parse_github_repository(manifest["repository"])
+            except ValueError as exc:
+                raise ControllerError(str(exc)) from exc
+            if github_task_repository(task) != canonical:
+                raise ControllerError("github_api repository does not match project manifest")
         key = task.get("idempotency_key")
         if key:
             row = self.db.execute("SELECT job_id FROM jobs WHERE idempotency_key=?", (key,)).fetchone()
@@ -833,6 +861,7 @@ class Controller:
         if "github_api" in integrations:
             try:
                 validate_github_api_request(task.get("integration_request"))
+                github_task_repository(task)
             except ValueError as exc:
                 raise ControllerError(str(exc)) from exc
             if "github_api" not in capabilities:

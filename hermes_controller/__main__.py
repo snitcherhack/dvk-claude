@@ -223,7 +223,7 @@ def main() -> None:
                 print(json.dumps({
                     "job_id": job_id,
                     "project": args.project_id,
-                    "engine": task_spec["execution_engine"],
+                    "engine": controller._task_engine(task_spec),
                     "engine_selection": task_spec.get("engine_selection"),
                 }, sort_keys=True))
             return

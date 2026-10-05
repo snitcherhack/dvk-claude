@@ -18,10 +18,10 @@ class FakeClient:
         return call
 
 
-@pytest.mark.parametrize("verb", sorted(GITHUB_API_VERBS))
+@pytest.mark.parametrize("verb", sorted(GITHUB_API_VERBS - {"pr_create"}))
 def test_dispatch(verb):
     client = FakeClient()
-    result = GitHubApiHandler(client).execute({"verb": verb, "params": {"owner": "o", "repo": "r"}})
+    result = execute(client, {"verb": verb, "params": {}})
     assert result.status == "DONE"
     assert client.calls == [(verb, {"owner": "o", "repo": "r"})]
     assert json.loads(result.evidence[0]) == {"verb": verb, "result": {"number": 42, "html_url": "https://github.com/o/r/pull/42", "status": "completed"}}
@@ -31,7 +31,7 @@ def test_dispatch(verb):
 @pytest.mark.parametrize("verb", ["unknown", "merge", "push"])
 def test_forbidden(verb):
     client = FakeClient()
-    result = GitHubApiHandler(client).execute({"verb": verb, "params": {}})
+    result = execute(client, {"verb": verb, "params": {}})
     assert result.status == "BLOCKED"
     assert result.summary == f"github_api: unknown or forbidden verb {verb}"
     assert not client.calls
@@ -39,7 +39,7 @@ def test_forbidden(verb):
 
 @pytest.mark.parametrize("payload", [None, {}, {"verb": "pr_get", "params": []}])
 def test_malformed_request(payload):
-    assert GitHubApiHandler(FakeClient()).execute(payload).status == "BLOCKED"
+    assert execute(FakeClient(), payload).status == "BLOCKED"
 
 
 class Response:
@@ -54,7 +54,6 @@ class Response:
 
 
 @pytest.mark.parametrize("verb, params, method, suffix, payload", [
-    ("pr_create", {"title": "Title", "head": "feature", "base": "main", "body": "Body"}, "POST", "/pulls", {"number": 42}),
     ("pr_get", {"number": 42}, "GET", "/pulls/42", {"number": 42}),
     ("pr_list", {}, "GET", "/pulls?state=open&per_page=100&page=1", [{"number": 42}]),
     ("actions_status", {"ref": "feature/x"}, "GET", "/actions/runs?head_sha=feature%2Fx&per_page=100&page=1", {"workflow_runs": []}),
@@ -68,7 +67,7 @@ def test_http_contract(verb, params, method, suffix, payload):
         assert request.get_header("Authorization") == "Bearer fake-canary"
         return Response(payload)
     client = GitHubApiClient("fake-canary", opener=opener)
-    result = GitHubApiHandler(client).execute({"verb": verb, "params": {"owner": "o", "repo": "r", **params}})
+    result = execute(client, {"verb": verb, "params": params})
     assert result.status == "DONE"
     assert calls[0].full_url == "https://api.github.com/repos/o/r" + suffix
     assert calls[0].method == method
@@ -85,17 +84,17 @@ def test_token_never_in_result(fail):
             raise URLError(token)
         return Response({"title": token, token: [token]})
     client = GitHubApiClient(token, opener=opener)
-    result = GitHubApiHandler(client).execute({"verb": "pr_get", "params": {"owner": "o", "repo": "r", "number": 1}})
+    result = execute(client, {"verb": "pr_get", "params": {"number": 1}})
     assert result.status == ("FAILED" if fail else "DONE")
     assert token not in json.dumps(result.result())
-    result = GitHubApiHandler(client).execute({"verb": token, "params": {}})
+    result = execute(client, {"verb": token, "params": {}})
     assert token not in json.dumps(result.result())
 
 
 def test_missing_token_blocks_without_http():
     def opener(*args, **kwargs):
         pytest.fail("no HTTP without token")
-    result = GitHubApiHandler(GitHubApiClient(None, opener=opener)).execute({"verb": "pr_get", "params": {"owner": "o", "repo": "r", "number": 1}})
+    result = execute(GitHubApiClient(None, opener=opener), {"verb": "pr_get", "params": {"number": 1}})
     assert result.status == "BLOCKED"
 
 
@@ -103,5 +102,77 @@ def test_missing_token_blocks_without_http():
 def test_invalid_parameters_do_not_send(params):
     def opener(*args, **kwargs):
         pytest.fail("invalid request sent")
-    result = GitHubApiHandler(GitHubApiClient("fake", opener=opener)).execute({"verb": "pr_get", "params": params})
+    result = execute(GitHubApiClient("fake", opener=opener), {"verb": "pr_get", "params": params})
     assert result.status == "BLOCKED"
+
+
+def execute(client, request):
+    return GitHubApiHandler(client).execute({
+        "repository": "git@github.com:o/r.git", "integration_request": request})
+
+
+def pr(state="open"):
+    return {"number": 42, "html_url": "https://github.com/o/r/pull/42",
+            "state": state, "head": {"label": "o:feature", "ref": "feature"},
+            "base": {"ref": "main"}}
+
+
+@pytest.mark.parametrize("existing, post_fails, status, posts", [
+    ([pr()], False, "DONE", 0), ([], False, "DONE", 1),
+    ([pr(), pr()], False, "BLOCKED", 0), ([pr("closed")], False, "BLOCKED", 0),
+    ([pr("unknown")], False, "BLOCKED", 0),
+    ([], True, "DONE", 1),
+])
+def test_create_reconciliation(existing, post_fails, status, posts):
+    calls = []
+    def opener(request, timeout):
+        calls.append(request)
+        if request.method == "POST":
+            if post_fails:
+                raise URLError("fake-secret")
+            return Response(pr())
+        assert "head=o%3Afeature" in request.full_url
+        assert "base=main" in request.full_url
+        return Response([pr()] if post_fails and any(c.method == "POST" for c in calls) else existing)
+    result = execute(GitHubApiClient("fake-secret", opener=opener),
+                     {"verb": "pr_create", "params": {"title": "Title", "head": "feature", "base": "main"}})
+    assert result.status == status
+    assert sum(c.method == "POST" for c in calls) == posts
+    if status == "BLOCKED":
+        assert "manual reconcile required" in result.summary
+    else:
+        data = json.loads(result.evidence[0])["result"]
+        assert data["number"] == 42
+        assert data.get("reconciled", False) == bool(existing or post_fails)
+    assert "fake-secret" not in json.dumps(result.result())
+
+
+@pytest.mark.parametrize("task", [
+    {"integration_request": {"verb": "pr_get", "params": {}}},
+    {"repository": "https://github.com/o/r", "github_repository": {"owner": "evil", "repo": "r"},
+     "integration_request": {"verb": "pr_get", "params": {}}},
+    {"repository": "https://github.com/o/r",
+     "integration_request": {"verb": "pr_get", "params": {"owner": "evil"}}},
+])
+def test_missing_or_tampered_target(task):
+    client = FakeClient()
+    assert GitHubApiHandler(client).execute(task).status == "BLOCKED"
+    assert not client.calls
+
+
+@pytest.mark.parametrize("mode", ["get_error", "post_error", "malformed", "full_page"])
+def test_uncertain_creation_never_retries_post(mode):
+    calls = []
+    def opener(request, timeout):
+        calls.append(request.method)
+        if mode == "get_error" or request.method == "POST":
+            raise URLError("fake-secret")
+        if mode == "malformed":
+            return Response([{"number": 42}])
+        return Response([pr()] * 100 if mode == "full_page" else [])
+    result = execute(GitHubApiClient("fake-secret", opener=opener),
+                     {"verb": "pr_create", "params": {"title": "Title", "head": "feature", "base": "main"}})
+    assert result.status == "BLOCKED"
+    assert "manual reconcile required" in result.summary
+    assert calls.count("POST") == (1 if mode == "post_error" else 0)
+    assert "fake-secret" not in json.dumps(result.result())

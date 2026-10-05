@@ -12,7 +12,7 @@ from test_project_registry import manifest
 @pytest.fixture
 def controller(tmp_path):
     instance = Controller(tmp_path / 'controller')
-    instance.register_project(manifest(tmp_path, allowed_integrations=['github_api']))
+    instance.register_project(manifest(tmp_path, allowed_integrations=['github_api'], repository='git@github.com:o/r.git'))
     yield instance
     instance.close()
 
@@ -112,3 +112,62 @@ def test_request_validator():
     for request in (None, [], {}, {'verb': [], 'params': {}}, {'verb': 'push', 'params': {}}, {'verb': 'pr_get', 'params': None}):
         with pytest.raises(ValueError):
             validate_github_api_request(request)
+
+
+@pytest.mark.parametrize("key", ["owner", "repo"])
+def test_cannot_override_repository(controller, key):
+    with pytest.raises(ControllerError, match="owner|repo"):
+        controller.build_project_task("sample-project", "Inspect.", integrations=["github_api"],
+                                      integration_request={"verb": "pr_get", "params": {key: "other"}})
+
+
+def test_canonical_target_and_no_engine(controller, monkeypatch):
+    import hermes_controller.controller as module
+    def forbidden(*args, **kwargs):
+        pytest.fail("integration selected an engine")
+    monkeypatch.setattr(module, "select_engine", forbidden)
+    task = controller.build_project_task("sample-project", "Inspect.", engine="auto",
+        integrations=["github_api"], integration_request={"verb": "pr_get", "params": {}})
+    assert task["github_repository"] == {"owner": "o", "repo": "r"}
+    assert "execution_engine" not in task
+    assert not set(task["required_capabilities"]) & {"codex", "claude", "hybrid"}
+    task["github_repository"]["repo"] = "other"
+    with pytest.raises(ControllerError):
+        controller.enqueue(task)
+
+
+@pytest.mark.parametrize("repository, expected", [
+    ("git@github.com:Owner/repo.git", ("Owner", "repo")),
+    ("https://github.com/Owner/repo.git", ("Owner", "repo")),
+    ("https://github.com/Owner/repo", ("Owner", "repo")),
+    ("http://github.com/o/r", None), ("https://evil.com/o/r", None),
+    ("https://github.com/o/r?x=1", None), ("git@github.com:o/../r.git", None),
+    ("https://github.com/o/r/extra", None), ("", None), (None, None),
+])
+def test_parse_repository(repository, expected):
+    from hermes_controller.github_api import parse_github_repository
+    if expected is None:
+        with pytest.raises(ValueError):
+            parse_github_repository(repository)
+    else:
+        assert parse_github_repository(repository) == expected
+
+
+@pytest.mark.parametrize("change", ["repository", "allowlist"])
+def test_enqueue_binds_registered_project(controller, tmp_path, change):
+    task = controller.build_project_task("sample-project", "Inspect.",
+        integrations=["github_api"], integration_request={"verb": "pr_get", "params": {}})
+    if change == "repository":
+        task["repository"] = "https://github.com/other/project"
+        task["github_repository"] = {"owner": "other", "repo": "project"}
+    else:
+        controller.register_project(manifest(tmp_path, repository="git@github.com:o/r.git"))
+    with pytest.raises(ControllerError):
+        controller.enqueue(task)
+
+
+@pytest.mark.parametrize("key", ["owner", "repo"])
+def test_validator_rejects_target_override(key):
+    from hermes_controller.github_api import validate_github_api_request
+    with pytest.raises(ValueError, match="owner/repo"):
+        validate_github_api_request({"verb": "pr_get", "params": {key: "other"}})

@@ -72,6 +72,7 @@ class WorkerDaemon:
     def __init__(self, config: dict[str, Any], adapter: ExecutionAdapter | None = None) -> None:
         self.config = config
         self.worker = {**config["worker"], "capabilities": list(config["worker"].get("capabilities", []))}
+        self.worker["capabilities"] = [c for c in self.worker["capabilities"] if c != "github_api"]
         self.integrations = {}
         integrations = config.get("integrations", {})
         if not isinstance(integrations, dict) or set(integrations) - {"github_api"}:
@@ -81,7 +82,10 @@ class WorkerDaemon:
             if (not isinstance(spec, dict) or set(spec) != {"token_env"}
                     or not isinstance(spec["token_env"], str) or not spec["token_env"].strip()):
                 raise ValueError("github_api requires a token_env name")
-            self.integrations["github_api"] = GitHubApiHandler(GitHubApiClient(os.environ.get(spec["token_env"])))
+            token = os.environ.get(spec["token_env"])
+            if not token or not token.strip():
+                raise ValueError(f"github_api requires environment variable {spec['token_env']}")
+            self.integrations["github_api"] = GitHubApiHandler(GitHubApiClient(token))
             if "github_api" not in self.worker["capabilities"]:
                 self.worker["capabilities"].append("github_api")
         self.client = HTTPControllerClient(config["controller_url"], self.worker["worker_id"], config["token"])
@@ -484,7 +488,7 @@ class WorkerDaemon:
                 if "github_api" in task.get("integrations", []):
                     handler = self.integrations.get("github_api")
                     result_box.append(
-                        handler.execute(task.get("integration_request")) if handler else
+                        handler.execute(task) if handler else
                         AdapterResult(status="BLOCKED", summary="github_api: integration is not configured")
                     )
                 else:
@@ -518,6 +522,7 @@ class WorkerDaemon:
             raise RuntimeError("adapter did not return a result")
         result = self._normalize_artifacts(self._normalize_gate_result(result_box[0], claim["task"]))
         now = time.time_ns() // 1_000_000
+        # github_api is a transport executor label, never a selectable engine.
         envelope = {**{key: claim[key] for key in ("job_id", "run_id", "attempt", "lease_id", "lease_token")}, "worker_id": self.worker["worker_id"], "started_at": now, "finished_at": now, "engine": ("github_api" if "github_api" in claim["task"].get("integrations", []) else self._execution_engine_for_task(claim["task"])), "engine_result": result.result(), "artifacts": list(result.artifacts or []), "hashes": dict(result.hashes or {})}
         self.pending_envelope = envelope; self._save_state(claim, envelope)
         try:

@@ -22,6 +22,34 @@ def validate_github_api_request(request) -> None:
     if not isinstance(request.get("params"), dict):
         raise ValueError("github_api params must be a dict")
 
+    if {"owner", "repo"} & request["params"].keys():
+        raise ValueError("github_api params cannot override owner/repo")
+
+
+def parse_github_repository(repository: str) -> tuple[str, str]:
+    """Accept only canonical GitHub SSH/HTTPS repository URLs."""
+    if not isinstance(repository, str):
+        raise ValueError("invalid GitHub repository")
+    match = re.fullmatch(
+        r"(?:git@github\.com:|https://github\.com/)"
+        r"([A-Za-z0-9_-][A-Za-z0-9_.-]*)/([A-Za-z0-9_-][A-Za-z0-9_.-]*)",
+        repository,
+    )
+    if not match:
+        raise ValueError("invalid GitHub repository")
+    owner, repo = match.groups()
+    repo = repo.removesuffix(".git")
+    if not repo:
+        raise ValueError("invalid GitHub repository")
+    return owner, repo
+
+
+def github_task_repository(task):
+    owner, repo = parse_github_repository(task.get("repository"))
+    if task.get("github_repository", {"owner": owner, "repo": repo}) != {"owner": owner, "repo": repo}:
+        raise ValueError("github_repository does not match repository")
+    return owner, repo
+
 
 # The integration deliberately has no generic HTTP or arbitrary-path entrypoint.
 
@@ -99,10 +127,12 @@ class GitHubApiClient:
     def pr_get(self, owner, repo, number):
         return self._request("GET", self._repo(owner, repo) + f"/pulls/{self._positive(number)}")
 
-    def pr_list(self, owner, repo, state="open", per_page=100, page=1):
+    def pr_list(self, owner, repo, state="open", per_page=100, page=1, head=None, base=None):
         if state not in ("open", "closed", "all"):
             raise ValueError("invalid PR state")
         query = urlencode({"state": state, "per_page": self._positive(per_page, 100), "page": self._positive(page)})
+        if head is not None:
+            query += "&" + urlencode({"head": self._text(head), "base": self._text(base)})
         data = self._request("GET", self._repo(owner, repo) + "/pulls?" + query)
         if not isinstance(data, list):
             raise RuntimeError("invalid PR list response")
@@ -126,7 +156,54 @@ class GitHubApiHandler:
     def __init__(self, client):
         self.client = client
 
-    def execute(self, request) -> AdapterResult:
+    def _reconcile(self, owner, repo, head, base):
+        # head + base is the restart-stable idempotency key. Include closed PRs:
+        # a closed/unknown match must never authorize another blind creation.
+        head = GitHubApiClient._text(head)
+        base = GitHubApiClient._text(base)
+        label = head if ":" in head else f"{owner}:{head}"
+        data = self.client.pr_list(owner=owner, repo=repo, state="all", head=label, base=base)
+        rows = data["pull_requests"]
+        if not isinstance(rows, list) or len(rows) >= 100:
+            raise ValueError("incomplete reconciliation")
+        matches = []
+        for row in rows:
+            if (not isinstance(row, dict) or row.get("head", {}).get("label") != label
+                    or row.get("base", {}).get("ref") != base):
+                raise ValueError("uncertain reconciliation")
+            matches.append(row)
+        if not matches:
+            return None
+        if len(matches) != 1 or matches[0].get("state") != "open":
+            raise ValueError("ambiguous reconciliation")
+        self._pr_identity(matches[0])
+        return {**matches[0], "reconciled": True}
+
+    @staticmethod
+    def _pr_identity(data):
+        if (not isinstance(data, dict) or type(data.get("number")) is not int
+                or data["number"] < 1 or not isinstance(data.get("html_url"), str)
+                or not data["html_url"].startswith("https://github.com/")):
+            raise ValueError("missing PR identity")
+
+    def pr_create(self, owner, repo, params):
+        existing = self._reconcile(owner, repo, params.get("head"), params.get("base"))
+        if existing is not None:
+            return existing
+        try:
+            data = self.client.pr_create(owner=owner, repo=repo, **params)
+            self._pr_identity(data)
+            return data
+        except Exception:
+            # POST is issued at most once. A lost response may hide a successful
+            # creation, so only GET reconciliation is safe here.
+            existing = self._reconcile(owner, repo, params.get("head"), params.get("base"))
+            if existing is None:
+                raise ValueError("creation outcome unknown") from None
+            return existing
+
+    def execute(self, task) -> AdapterResult:
+        request = task.get("integration_request") if isinstance(task, dict) else None
         verb = request.get("verb") if isinstance(request, dict) else None
         if not isinstance(verb, str) or verb not in GITHUB_API_VERBS:
             label = verb if isinstance(verb, str) else "<invalid>"
@@ -135,7 +212,14 @@ class GitHubApiHandler:
             return AdapterResult(status="BLOCKED", summary=f"github_api: unknown or forbidden verb {label}")
         try:
             validate_github_api_request(request)
-            data = getattr(self.client, verb)(**request["params"])
+            owner, repo = github_task_repository(task)
+            if verb == "pr_create":
+                try:
+                    data = self.pr_create(owner, repo, request["params"])
+                except Exception:
+                    return AdapterResult(status="BLOCKED", summary="github_api: manual reconcile required")
+            else:
+                data = getattr(self.client, verb)(owner=owner, repo=repo, **request["params"])
             if not isinstance(data, dict):
                 raise RuntimeError("invalid client result")
             if isinstance(self.client, GitHubApiClient):
