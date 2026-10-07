@@ -33,7 +33,7 @@ def test_manifest_cannot_grant_integration_via_capabilities(tmp_path):
         Controller._validate_project(manifest(tmp_path, capabilities=['github_api']))
 
 
-@pytest.mark.parametrize('verb', ['pr_create', 'pr_get', 'pr_list', 'actions_status', 'checks_status'])
+@pytest.mark.parametrize('verb', ['pr_create', 'pr_get', 'pr_list', 'actions_status', 'commit_status'])
 def test_opt_in(controller, verb):
     request = {'verb': verb, 'params': {}}
     task = controller.build_project_task('sample-project', 'Inspect.', integrations=['github_api'], integration_request=request)
@@ -47,7 +47,7 @@ def test_opt_in(controller, verb):
     assert 'github_api' not in normal['required_capabilities']
 
 
-@pytest.mark.parametrize('payload', [None, {}, [], {'verb': 'merge', 'params': {}}, {'verb': 'push', 'params': {}}, {'verb': 'unknown', 'params': {}}, {'verb': [], 'params': {}}, {'verb': 'pr_get'}, {'verb': 'pr_get', 'params': []}])
+@pytest.mark.parametrize('payload', [None, {}, [], {'verb': 'merge', 'params': {}}, {'verb': 'push', 'params': {}}, {'verb': 'checks_status', 'params': {}}, {'verb': 'unknown', 'params': {}}, {'verb': [], 'params': {}}, {'verb': 'pr_get'}, {'verb': 'pr_get', 'params': []}])
 def test_invalid_request(controller, payload):
     with pytest.raises(ControllerError):
         controller.build_project_task('sample-project', 'Inspect.', integrations=['github_api'], integration_request=payload)
@@ -107,9 +107,9 @@ def test_cli_opt_in(controller, command):
 def test_request_validator():
     from hermes_controller.github_api import GITHUB_API_VERBS, KNOWN_INTEGRATIONS, validate_github_api_request
     assert KNOWN_INTEGRATIONS == frozenset({'github_api'})
-    assert GITHUB_API_VERBS == frozenset({'pr_create', 'pr_get', 'pr_list', 'actions_status', 'checks_status'})
+    assert GITHUB_API_VERBS == frozenset({'pr_create', 'pr_get', 'pr_list', 'actions_status', 'commit_status'})
     assert validate_github_api_request({'verb': 'pr_get', 'params': {}}) is None
-    for request in (None, [], {}, {'verb': [], 'params': {}}, {'verb': 'push', 'params': {}}, {'verb': 'pr_get', 'params': None}):
+    for request in (None, [], {}, {'verb': [], 'params': {}}, {'verb': 'push', 'params': {}}, {'verb': 'checks_status', 'params': {}}, {'verb': 'pr_get', 'params': None}):
         with pytest.raises(ValueError):
             validate_github_api_request(request)
 

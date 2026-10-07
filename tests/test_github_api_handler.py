@@ -28,7 +28,7 @@ def test_dispatch(verb):
     assert result.completed
 
 
-@pytest.mark.parametrize("verb", ["unknown", "merge", "push"])
+@pytest.mark.parametrize("verb", ["unknown", "merge", "push", "checks_status"])
 def test_forbidden(verb):
     client = FakeClient()
     result = execute(client, {"verb": verb, "params": {}})
@@ -57,7 +57,7 @@ class Response:
     ("pr_get", {"number": 42}, "GET", "/pulls/42", {"number": 42}),
     ("pr_list", {}, "GET", "/pulls?state=open&per_page=100&page=1", [{"number": 42}]),
     ("actions_status", {"ref": "feature/x"}, "GET", "/actions/runs?head_sha=feature%2Fx&per_page=100&page=1", {"workflow_runs": []}),
-    ("checks_status", {"ref": "feature/x"}, "GET", "/commits/feature%2Fx/check-runs?per_page=100&page=1", {"check_runs": []}),
+    ("commit_status", {"ref": "feature/x"}, "GET", "/commits/feature%2Fx/status?per_page=100&page=1", {"state": "pending", "sha": "abc", "statuses": []}),
 ])
 def test_http_contract(verb, params, method, suffix, payload):
     calls = []
@@ -191,11 +191,12 @@ def test_evidence_is_bounded_exact_deterministic_and_secret_free(verb):
             "base": {"ref": "main", **extra}}
     run = {key: key + "-value" for key in (
         "id", "name", "head_sha", "status", "conclusion", "html_url", "created_at", "updated_at")}
-    check = {key: key + "-value" for key in (
-        "name", "status", "conclusion", "details_url", "started_at", "completed_at")}
+    status = {key: key + "-value" for key in (
+        "context", "state", "description", "target_url", "created_at", "updated_at")}
     payload = {"pr_get": pull, "pr_create": pull, "pr_list": [pull] * 100,
                "actions_status": {"total_count": 100, "workflow_runs": [{**run, **extra}] * 100, **extra},
-               "checks_status": {"total_count": 100, "check_runs": [{**check, **extra}] * 100, **extra}}[verb]
+               "commit_status": {"state": "success", "sha": "abc", "total_count": 100,
+                                 "statuses": [{**status, **extra}] * 100, **extra}}[verb]
 
     def opener(request, timeout):
         if verb == "pr_create" and request.method == "GET":
@@ -203,7 +204,7 @@ def test_evidence_is_bounded_exact_deterministic_and_secret_free(verb):
         return Response(payload)
 
     params = {"pr_get": {"number": 42}, "pr_create": {"title": "Title", "head": "feature", "base": "main"},
-              "pr_list": {}, "actions_status": {"ref": "abc"}, "checks_status": {"ref": "abc"}}[verb]
+              "pr_list": {}, "actions_status": {"ref": "abc"}, "commit_status": {"ref": "abc"}}[verb]
     client = GitHubApiClient(token, opener=opener)
     results = [execute(client, {"verb": verb, "params": params}) for _ in range(2)]
     assert all(result.status == "DONE" for result in results)
@@ -222,8 +223,14 @@ def test_evidence_is_bounded_exact_deterministic_and_secret_free(verb):
             "pr_list": ("pulls", "count", {"number": 42, "url": pull["html_url"],
                                          "state": "open", "head_ref": "feature", "base_ref": "main"}),
             "actions_status": ("runs", "total_count", run),
-            "checks_status": ("checks", "total_count", check),
-        }[verb]
-        assert set(data) == {"verb", key, count_key}
-        assert data[count_key] == 100
-        assert data[key] == [expected] * github_api.EVIDENCE_ITEMS_LIMIT
+        }.get(verb, (None, None, None))
+        if verb == "commit_status":
+            assert set(data) == {"verb", "state", "sha", "total_count", "statuses"}
+            assert data["state"] == "success"
+            assert data["sha"] == "abc"
+            assert data["total_count"] == 100
+            assert data["statuses"] == [status] * github_api.EVIDENCE_ITEMS_LIMIT
+        else:
+            assert set(data) == {"verb", key, count_key}
+            assert data[count_key] == 100
+            assert data[key] == [expected] * github_api.EVIDENCE_ITEMS_LIMIT

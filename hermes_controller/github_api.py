@@ -9,7 +9,7 @@ from .adapters import AdapterResult
 
 KNOWN_INTEGRATIONS = frozenset({"github_api"})
 GITHUB_API_VERBS = frozenset({
-    "pr_create", "pr_get", "pr_list", "actions_status", "checks_status",
+    "pr_create", "pr_get", "pr_list", "actions_status", "commit_status",
 })
 
 
@@ -46,13 +46,18 @@ def _summarize_actions_status(data):
     ]}
 
 
-def _summarize_checks_status(data):
-    checks = data.get("check_runs", [])
-    return {"total_count": data.get("total_count", len(checks)), "checks": [
-        {key: row.get(key) for key in (
-            "name", "status", "conclusion", "details_url", "started_at", "completed_at")}
-        for row in checks[:EVIDENCE_ITEMS_LIMIT]
-    ]}
+def _summarize_commit_status(data):
+    statuses = data.get("statuses", [])
+    return {
+        "state": data.get("state"),
+        "sha": data.get("sha"),
+        "total_count": data.get("total_count", len(statuses)),
+        "statuses": [
+            {key: row.get(key) for key in (
+                "context", "state", "description", "target_url", "created_at", "updated_at")}
+            for row in statuses[:EVIDENCE_ITEMS_LIMIT]
+        ],
+    }
 
 
 def validate_github_api_request(request) -> None:
@@ -184,12 +189,12 @@ class GitHubApiClient:
         query = urlencode({"head_sha": self._text(ref), "per_page": self._positive(per_page, 100), "page": self._positive(page)})
         return self._request("GET", self._repo(owner, repo) + "/actions/runs?" + query)
 
-    def checks_status(self, owner, repo, ref, per_page=100, page=1):
+    def commit_status(self, owner, repo, ref, per_page=100, page=1):
         encoded = quote(self._text(ref), safe="")
         if encoded in (".", ".."):
             raise ValueError("invalid ref")
         query = urlencode({"per_page": self._positive(per_page, 100), "page": self._positive(page)})
-        return self._request("GET", self._repo(owner, repo) + f"/commits/{encoded}/check-runs?" + query)
+        return self._request("GET", self._repo(owner, repo) + f"/commits/{encoded}/status?" + query)
 
 
 class GitHubApiHandler:
@@ -272,7 +277,7 @@ class GitHubApiHandler:
                 summary = {
                     "pr_list": _summarize_pr_list,
                     "actions_status": _summarize_actions_status,
-                    "checks_status": _summarize_checks_status,
+                    "commit_status": _summarize_commit_status,
                 }[verb](data)
             evidence = json.dumps({"verb": verb, **summary}, sort_keys=True)
         except (ValueError, TypeError):
