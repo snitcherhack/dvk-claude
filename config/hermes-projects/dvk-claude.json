@@ -18,6 +18,9 @@
     "python",
     "tests"
   ],
+  "allowed_integrations": [
+    "github_api"
+  ],
   "task_type": "development",
   "execution_profile": "hermes",
   "human_gates": [],
