@@ -115,7 +115,22 @@
       "Bash(cd *devops-web* && git commit *)",
       "Bash(cd *pentest-lab* && git push)",
       "Bash(cd *pentest-lab* && git pull)",
-      "Bash(cd *pentest-lab* && git commit *)"
+      "Bash(cd *pentest-lab* && git commit *)",
+      "Bash(*ansible-playbook*)",
+      "Bash(make install_all*)",
+      "Bash(make install_update*)",
+      "Bash(make install_zabbix*)",
+      "Bash(make install_update_zabbix*)",
+      "Bash(make install_zubat*)",
+      "Bash(make install_dtbat*)",
+      "Bash(make install_larus*)",
+      "Bash(make install_python3*)",
+      "Bash(make remove_software*)",
+      "Bash(make upgrade_ub18_24*)",
+      "Bash(make migrate_to_larus*)",
+      "Bash(make update_camera*)",
+      "Bash(make install_crontab*)",
+      "Bash(*update_all.sh*)"
     ]
   },
   "hooks": {
