@@ -151,6 +151,8 @@ nota y credenciales no llegaron al modelo ni al task snapshot persistido. Tras
 la prueba se restauraron los servicios productivos en `36dbc940`; Human Gates
 v1 quedó fusionado y desplegado permanentemente en `7f9d8bc`; el smoke productivo `b1440844-8bcd-4b74-b0b1-7f17cca04595` confirmó `WAIT_USER -> APPROVED -> attempt 2 -> DONE`, separación de credenciales y ausencia de metadatos humanos en el task persistido.
 
+Fase 14 añade un bridge Telegram separado en el gateway oficial `hermes-agent`. El bridge solo recibe metadatos públicos de waits, usa el operator API local, persiste únicamente routing de mensajes/callbacks y no conoce SQLite del Controller. Los botones Human Gates usan una allow-list dedicada de usuario+chat y no confían en la autorización general del bot; `GATEWAY_ALLOW_ALL_USERS=true` no concede capacidad de aprobar. El bridge está deshabilitado por defecto y el primer E2E solo habilitará `HERMES_PHASE14_TELEGRAM_TEST`.
+
 ## Modo híbrido y papel de codex-plugin-cc
 
 El modo `hybrid` del worker no depende del plugin para la ejecución autónoma.

@@ -9,7 +9,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from .controller import Controller, ControllerError, StaleResultError
+from .controller import Controller, ControllerError, GateConflictError, JobNotFoundError, StaleResultError
 
 
 MAX_BODY_BYTES = 4 * 1024 * 1024
@@ -87,17 +87,15 @@ class ControllerRequestHandler(BaseHTTPRequestHandler):
             if self.path == "/health":
                 self._reply(200, {"status": "ok"})
                 return
+            if self.path == "/v1/gates/pending":
+                if not self._operator_auth(): self._reply(401, {"error": "unauthorized"}); return
+                self._reply(200, {"gates": self.server.controller.pending_gates()})
+                return
             prefix = "/v1/gates/"
             if self.path.startswith(prefix):
                 if not self._operator_auth(): self._reply(401, {"error": "unauthorized"}); return
                 job_id = self.path[len(prefix):]
-                status = self.server.controller.status(job_id)
-                self._reply(200, {
-                    "job_id": job_id,
-                    "state": status["state"],
-                    "gate": status["gate"],
-                    "decisions": self.server.controller.gate_history(job_id),
-                })
+                self._reply(200, self.server.controller.gate_status(job_id))
                 return
             prefix = "/v1/jobs/"
             if self.path.startswith(prefix):
@@ -146,6 +144,7 @@ class ControllerRequestHandler(BaseHTTPRequestHandler):
                 )
                 result = resolver(
                     body["job_id"], body["gate"], actor=body["actor"], note=body.get("note"),
+                    source_run_id=body.get("source_run_id"),
                 )
                 self._reply(200, result)
                 return
@@ -160,7 +159,9 @@ class ControllerRequestHandler(BaseHTTPRequestHandler):
             if self.path == "/v1/runs/result":
                 self.server.controller.ingest_result(body); self._reply(200, {"ingested": True}); return
             self._reply(404, {"error": "not found"})
-        except StaleResultError as exc:
+        except JobNotFoundError as exc:
+            self._reply(404, {"error": str(exc)})
+        except (StaleResultError, GateConflictError) as exc:
             self._reply(409, {"error": str(exc)})
         except (ControllerError, KeyError, ValueError, json.JSONDecodeError) as exc:
             self._reply(400, {"error": str(exc)})

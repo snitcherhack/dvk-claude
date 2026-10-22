@@ -258,7 +258,7 @@ Usuario: aprobar / rechazar
   +---- rechazar --> Controller cancela/bloquea
 ```
 
-La resolución de gates de Fase 13 está desplegada permanentemente y validada en producción desde el 25 de septiembre de 2026. `WAIT_USER` sigue siendo fail-closed: el Controller persiste la decisión humana y solo un `APPROVED` sobre una tarea `safe_retry` vuelve a `QUEUED`; `REJECTED` termina en `CANCELLED`. En tareas `manual_reconcile`, incluso una aprobación termina en `NEEDS_RECONCILIATION` y nunca se reejecuta automáticamente. El API de operador usa un token productivo separado del token del worker y almacenado fuera de Git. La conexión de ese API con Telegram corresponde a la fase siguiente.
+La resolución de gates de Fase 13 está desplegada permanentemente y validada en producción desde el 25 de septiembre de 2026. `WAIT_USER` sigue siendo fail-closed: el Controller persiste la decisión humana y solo un `APPROVED` sobre una tarea `safe_retry` vuelve a `QUEUED`; `REJECTED` termina en `CANCELLED`. En tareas `manual_reconcile`, incluso una aprobación termina en `NEEDS_RECONCILIATION` y nunca se reejecuta automáticamente. El API de operador usa un token productivo separado del token del worker y almacenado fuera de Git. Fase 14 implementa localmente la conexión Telegram sobre ese API; todavía no está desplegada ni E2E-verificada con Telegram real.
 
 ## Papel de Telegram
 
@@ -275,7 +275,7 @@ Se ha verificado operativamente que una petición enviada por Telegram puede pro
 queue -> claim main-linux -> engine -> result
 ```
 
-El gateway pertenece a una capa separada de `dvk-claude`. El contrato de `dvk-claude` hacia esa capa es la creación/consulta de jobs y la superficie normalizada de `Controller.status`.
+El gateway pertenece a una capa separada de `dvk-claude`. Para Human Gates, Fase 14 amplía el contrato con `GET /v1/gates/pending` y resolución ligada al `source_run_id`. El bridge del gateway permanece separado de la DB del Controller y usa callbacks Telegram opacos `hg:a:<id>` / `hg:r:<id>`. La autorización de esos botones es propia (`HERMES_GATE_APPROVER_USERS` + `HERMES_GATE_APPROVER_CHATS`) y no hereda `GATEWAY_ALLOW_ALL_USERS`.
 
 El gateway también puede responder localmente si una petición no exige delegación. Para forzar ejecución distribuida, la petición o la propia integración deben indicar que el trabajo debe pasar por el Controller.
 
@@ -339,7 +339,7 @@ Una ejecución `FAILED` no implica un fallo de transporte. El job read-only que 
 
 1. Distinguir review read-only de review de alto impacto en `balanced-v1`.
 2. Human Gates v1 quedó fusionado, desplegado y validado en producción en `7f9d8bc`; mantener monitorización del lifecycle y del audit trail.
-3. Conectar el API de operador desplegado con Telegram sin exponer tokens de worker ni credenciales del Controller.
+3. Fase 14 Telegram ↔ Human Gates está implementada localmente en worktrees aislados; falta commit final, definir la allow-list humana, despliegue temporal y E2E real con `HERMES_PHASE14_TELEGRAM_TEST`.
 4. Mantener el gateway como interfaz y el Controller como autoridad de estado.
 5. Habilitar `windows-render` sólo cuando su flujo y gates estén probados.
 6. Mantener trazabilidad de engine, worker, run, evidencia y resultado en cada delegación.
