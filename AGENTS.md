@@ -40,6 +40,9 @@ controlada por Hermes.
 ## Mapa del repositorio
 
 - `hermes_controller/`: Controller, registry, policy, adapters y transporte.
+- `hermes_agent_plugins/`: plugins propiedad de Hermes para extender el Gateway
+  upstream sin modificar su checkout; actualmente contiene el bridge de human
+  gates de Telegram, que solo es operativo tras E2E verificado.
 - `config/hermes-projects/`: manifests. Su presencia no prueba que el proyecto
   esté registrado o activo; comprueba `project list` en el Controller.
 - `config/hermes-workers/`: configuración versionada de workers. Verifica el

@@ -1,0 +1,7 @@
+name: hermes-gates
+version: 0.1.0
+description: Deterministic Hermes Controller human-gate bridge for chat slash commands
+requires_env:
+  - name: HERMES_OPERATOR_TOKEN
+    description: Operator token used only for authenticated human-gate Controller API calls
+    secret: true
