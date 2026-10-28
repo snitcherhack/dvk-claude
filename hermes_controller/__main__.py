@@ -89,10 +89,12 @@ def main() -> None:
     gate = commands.add_parser("gate")
     gate_sub = gate.add_subparsers(dest="gate_command", required=True)
     gate_sub.add_parser("status").add_argument("job_id")
+    gate_sub.add_parser("pending")
     for action in ("approve", "reject"):
         gate_action = gate_sub.add_parser(action)
         gate_action.add_argument("job_id")
         gate_action.add_argument("gate_name")
+        gate_action.add_argument("--source-run-id", required=True)
         gate_action.add_argument("--actor", required=True)
         gate_action.add_argument("--note")
 
@@ -160,7 +162,9 @@ def main() -> None:
             return
 
         if args.command == "gate":
-            if args.gate_command == "status":
+            if args.gate_command == "pending":
+                out = {"gates": controller.pending_gates()}
+            elif args.gate_command == "status":
                 job_status = controller.status(args.job_id)
                 out = {
                     "job_id": args.job_id,
@@ -170,11 +174,15 @@ def main() -> None:
                 }
             elif args.gate_command == "approve":
                 out = controller.approve_gate(
-                    args.job_id, args.gate_name, actor=args.actor, note=args.note,
+                    args.job_id, args.gate_name,
+                    source_run_id=args.source_run_id,
+                    actor=args.actor, note=args.note,
                 )
             else:
                 out = controller.reject_gate(
-                    args.job_id, args.gate_name, actor=args.actor, note=args.note,
+                    args.job_id, args.gate_name,
+                    source_run_id=args.source_run_id,
+                    actor=args.actor, note=args.note,
                 )
             print(json.dumps(out, sort_keys=True))
             return

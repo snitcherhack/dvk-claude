@@ -258,7 +258,54 @@ Usuario: aprobar / rechazar
   +---- rechazar --> Controller cancela/bloquea
 ```
 
-La resolución de gates de Fase 13 está desplegada permanentemente y validada en producción desde el 25 de septiembre de 2026. `WAIT_USER` sigue siendo fail-closed: el Controller persiste la decisión humana y solo un `APPROVED` sobre una tarea `safe_retry` vuelve a `QUEUED`; `REJECTED` termina en `CANCELLED`. En tareas `manual_reconcile`, incluso una aprobación termina en `NEEDS_RECONCILIATION` y nunca se reejecuta automáticamente. El API de operador usa un token productivo separado del token del worker y almacenado fuera de Git. La conexión de ese API con Telegram corresponde a la fase siguiente.
+La resolución de gates de Fase 13 está desplegada permanentemente y validada en producción desde el 25 de septiembre de 2026. `WAIT_USER` sigue siendo fail-closed: el Controller persiste la decisión humana y solo un `APPROVED` sobre una tarea `safe_retry` vuelve a `QUEUED`; `REJECTED` termina en `CANCELLED`. En tareas `manual_reconcile`, incluso una aprobación termina en `NEEDS_RECONCILIATION` y nunca se reejecuta automáticamente. El API de operador usa un token productivo separado del token del worker y almacenado fuera de Git.
+
+### Fase 14: contrato Telegram <-> Human Gates
+
+La implementación de Fase 14 añade una vista agregada autenticada:
+
+```text
+GET /v1/gates/pending
+```
+
+Cada entrada pendiente identifica como mínimo:
+
+```text
+job_id
+project
+gate
+source_run_id
+attempt
+summary
+```
+
+`source_run_id` forma parte de la decisión humana. `approve` y `reject`
+deben reenviarlo al Controller; si el gate cambió, el run ya no es vigente o
+existe una resolución incompatible, el Controller responde `409 Conflict` y
+no aplica la decisión.
+
+El bridge de mensajería propiedad de Hermes vive bajo:
+
+```text
+hermes_agent_plugins/hermes-gates/
+```
+
+y se despliega como plugin de usuario de `hermes-agent`, sin modificar el
+checkout upstream. Expone:
+
+```text
+/gates
+/gate approve <job-prefix> [nota]
+/gate reject <job-prefix> [nota]
+```
+
+El plugin refresca `/v1/gates/pending` inmediatamente antes de resolver un
+gate y usa un token de operador dedicado. El Gateway no debe heredar el
+`controller.env` completo ni recibir credenciales de worker.
+
+Esta integración no se considera operativa hasta superar un E2E real por
+Telegram: `WAIT_USER -> /gates -> aprobación/rechazo humano -> reanudación o
+cancelación -> resultado final`.
 
 ## Papel de Telegram
 
@@ -339,7 +386,7 @@ Una ejecución `FAILED` no implica un fallo de transporte. El job read-only que 
 
 1. Distinguir review read-only de review de alto impacto en `balanced-v1`.
 2. Human Gates v1 quedó fusionado, desplegado y validado en producción en `7f9d8bc`; mantener monitorización del lifecycle y del audit trail.
-3. Conectar el API de operador desplegado con Telegram sin exponer tokens de worker ni credenciales del Controller.
+3. Fase 14: integrar y desplegar el plugin `hermes-gates` y cerrar el E2E real Telegram -> human gate -> Controller -> worker, sin exponer tokens de worker ni credenciales adicionales del Controller.
 4. Mantener el gateway como interfaz y el Controller como autoridad de estado.
 5. Habilitar `windows-render` sólo cuando su flujo y gates estén probados.
 6. Mantener trazabilidad de engine, worker, run, evidencia y resultado en cada delegación.

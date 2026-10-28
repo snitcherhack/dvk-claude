@@ -12,7 +12,7 @@ import pytest
 from hermes_controller.adapters import AdapterResult
 from hermes_controller.api import serve
 from hermes_controller.clock import FakeClock
-from hermes_controller.controller import Controller, ControllerError
+from hermes_controller.controller import Controller, ControllerError, GateConflictError
 from hermes_controller.worker import WorkerDaemon
 
 
@@ -86,6 +86,43 @@ def wait_for_gate(controller, *, policy="safe_retry", gates=None):
     claim = controller.claim("main-linux")
     controller.ingest_result(envelope(claim))
     return job, claim
+
+
+def test_pending_gates_exposes_current_wait_user_contract_only(core):
+    controller, _ = core
+    job, claim = wait_for_gate(controller)
+    done_job = controller.enqueue(task(gates=[]))
+    done_claim = controller.claim("main-linux")
+    controller.ingest_result(envelope(done_claim, status="DONE", gate=None))
+
+    pending = controller.pending_gates()
+
+    assert pending == [{
+        "job_id": job,
+        "project": "test",
+        "gate": GATE_A,
+        "source_run_id": claim["run_id"],
+        "attempt": 1,
+        "summary": "gate test",
+    }]
+    serialized = json.dumps(pending)
+    assert claim["lease_token"] not in serialized
+    assert done_job not in serialized
+
+
+def test_resolution_rejects_stale_source_run_id(core):
+    controller, _ = core
+    job, claim = wait_for_gate(controller)
+
+    with pytest.raises(GateConflictError, match="source_run_id"):
+        controller.approve_gate(
+            job, GATE_A, source_run_id="stale-run", actor="deiv",
+        )
+
+    resolution = controller.approve_gate(
+        job, GATE_A, source_run_id=claim["run_id"], actor="deiv",
+    )
+    assert resolution["source_run_id"] == claim["run_id"]
 
 
 def test_wait_user_exposes_sanitized_gate_summary_and_audit_history(core):
@@ -352,7 +389,7 @@ def _operator_request(base_url: str, path: str, token: str, *, body=None):
 def test_http_operator_gate_api_is_separate_from_worker_auth(tmp_path):
     controller = Controller(tmp_path / "controller")
     controller.register_worker(WORKER)
-    job, _ = wait_for_gate(controller, gates=[GATE_A, GATE_B])
+    job, first = wait_for_gate(controller, gates=[GATE_A, GATE_B])
     server = serve(
         controller, port=0,
         enrollment_tokens={"main-linux": "worker-token"},
@@ -363,13 +400,14 @@ def test_http_operator_gate_api_is_separate_from_worker_auth(tmp_path):
     base = f"http://127.0.0.1:{server.server_port}"
     try:
         for token in ("", "worker-token"):
-            request = urllib.request.Request(
-                base + f"/v1/gates/{job}",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            with pytest.raises(urllib.error.HTTPError) as exc:
-                urllib.request.urlopen(request, timeout=5)
-            assert exc.value.code == 401
+            for path in (f"/v1/gates/{job}", "/v1/gates/pending"):
+                request = urllib.request.Request(
+                    base + path,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                with pytest.raises(urllib.error.HTTPError) as exc:
+                    urllib.request.urlopen(request, timeout=5)
+                assert exc.value.code == 401
 
         status_code, shown = _operator_request(base, f"/v1/gates/{job}", "operator-token")
         assert status_code == 200
@@ -378,20 +416,73 @@ def test_http_operator_gate_api_is_separate_from_worker_auth(tmp_path):
         assert shown["gate"]["waiting_for"] == GATE_A
         assert shown["decisions"] == []
 
+        status_code, pending = _operator_request(base, "/v1/gates/pending", "operator-token")
+        assert status_code == 200
+        assert pending == {"gates": [{
+            "job_id": job,
+            "project": "test",
+            "gate": GATE_A,
+            "source_run_id": first["run_id"],
+            "attempt": 1,
+            "summary": "gate test",
+        }]}
+
+        stale_request = urllib.request.Request(
+            base + "/v1/gates/approve",
+            data=json.dumps({
+                "job_id": job,
+                "gate": GATE_A,
+                "source_run_id": "stale-run",
+                "actor": "deiv",
+            }).encode("utf-8"),
+            headers={"Authorization": "Bearer operator-token", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(stale_request, timeout=5)
+        assert exc.value.code == 409
+
         status_code, approved = _operator_request(
             base, "/v1/gates/approve", "operator-token",
-            body={"job_id": job, "gate": GATE_A, "actor": "deiv", "note": "http approval"},
+            body={
+                "job_id": job,
+                "gate": GATE_A,
+                "source_run_id": first["run_id"],
+                "actor": "deiv",
+                "note": "http approval",
+            },
         )
         assert status_code == 200
         assert approved["decision"] == "APPROVED"
         assert approved["disposition"] == "QUEUED"
         assert controller.status(job)["state"] == "QUEUED"
 
+        conflict_request = urllib.request.Request(
+            base + "/v1/gates/reject",
+            data=json.dumps({
+                "job_id": job,
+                "gate": GATE_A,
+                "source_run_id": first["run_id"],
+                "actor": "deiv",
+            }).encode("utf-8"),
+            headers={"Authorization": "Bearer operator-token", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(conflict_request, timeout=5)
+        assert exc.value.code == 409
+
         second = controller.claim("main-linux")
         controller.ingest_result(envelope(second, status="WAIT_USER", gate=GATE_B))
         status_code, rejected = _operator_request(
             base, "/v1/gates/reject", "operator-token",
-            body={"job_id": job, "gate": GATE_B, "actor": "deiv", "note": "http rejection"},
+            body={
+                "job_id": job,
+                "gate": GATE_B,
+                "source_run_id": second["run_id"],
+                "actor": "deiv",
+                "note": "http rejection",
+            },
         )
         assert status_code == 200
         assert rejected["decision"] == "REJECTED"
@@ -438,12 +529,22 @@ def test_cli_gate_approve_and_status(tmp_path):
     root = tmp_path / "controller"
     controller = Controller(root)
     controller.register_worker(WORKER)
-    job, _ = wait_for_gate(controller)
+    job, claim = wait_for_gate(controller)
     controller.close()
 
     base = [sys.executable, "-m", "hermes_controller", "--runtime-root", str(root), "gate"]
+    pending = subprocess.run([*base, "pending"], text=True, capture_output=True, check=True)
+    pending_payload = json.loads(pending.stdout)
+    assert pending_payload["gates"][0]["job_id"] == job
+    assert pending_payload["gates"][0]["source_run_id"] == claim["run_id"]
+
     approved = subprocess.run(
-        [*base, "approve", job, GATE_A, "--actor", "deiv", "--note", "cli approval"],
+        [
+            *base, "approve", job, GATE_A,
+            "--source-run-id", claim["run_id"],
+            "--actor", "deiv",
+            "--note", "cli approval",
+        ],
         text=True, capture_output=True, check=True,
     )
     payload = json.loads(approved.stdout)
